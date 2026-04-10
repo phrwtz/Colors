@@ -14,6 +14,7 @@
       </header>
 
       <section class="controls" aria-label="Game controls">
+        <button id="instructions-btn" type="button">Instructions</button>
         <button id="undo-btn" type="button">Undo</button>
         <button id="reset-btn" type="button">Reset</button>
         <button id="new-board-btn" type="button">New Board</button>
@@ -50,6 +51,32 @@
       <section class="board-wrap" aria-label="Colors board">
         <svg id="board" role="img" aria-label="Hex board"></svg>
       </section>
+
+      <dialog id="instructions-modal" aria-labelledby="instructions-title">
+        <article class="instructions-panel">
+          <h2 id="instructions-title">Instructions</h2>
+          <p class="instructions-text">
+            The object of this game is to turn as many of the hexagons as possible white. You do this by dragging
+            the colored hexagonal tiles to target tiles of a different color. When this happens the target tile
+            changes color and the moving tile leaves behind a white hexagon. The legal moves are a follows: a blue
+            tile placed on a red target tile turns it purple, a red tile placed oh a yellow target tile turns it
+            orange, and a yellow tile placed on a blue target tile turns it green. When all three primary colors are
+            present the tile turns white; thus a red tile placed on a green tile, a blue tile on an orange tile, and
+            a yellow tile on a purple tile all become white.
+          </p>
+          <p class="instructions-text">
+            Adjacent tiles of the same color act as &quot;roads&quot; for moving tiles, white tiles or tiles that are
+            not legal target tiles act as barricades. A tile can move in any direction along tiles of the same color
+            before reaching a target tile that it can mix with. If that tile is also part of a contiguous group of
+            tiles of the same color the moving tile can continue to move in any direction along those adjacent tiles
+            before being placed on top of one of them (and changing its color). However, once a tile has thus selected
+            a target color it cannot &quot;change its mind&quot; and move to another color even if that color is a legal target.
+          </p>
+          <div class="instructions-actions">
+            <button id="instructions-close-btn" type="button">Close</button>
+          </div>
+        </article>
+      </dialog>
     </main>
 
     <script src="app.js"></script>

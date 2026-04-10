@@ -99,6 +99,11 @@ button:focus-visible {
   cursor: default;
 }
 
+#instructions-btn {
+  border-color: #406b22;
+  background: #eef8d9;
+}
+
 .legend {
   display: block;
   margin-bottom: 1rem;
@@ -198,6 +203,42 @@ button:focus-visible {
 #preview-layer .overlap-preview {
   stroke: none;
   opacity: 0.95;
+}
+
+#instructions-modal {
+  border: none;
+  border-radius: 14px;
+  padding: 0;
+  width: min(820px, 92vw);
+  max-height: 82vh;
+  background: #fffdf8;
+  color: var(--ink);
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.3);
+}
+
+#instructions-modal::backdrop {
+  background: rgba(7, 18, 28, 0.48);
+}
+
+.instructions-panel {
+  padding: 1rem 1.1rem 1rem;
+}
+
+.instructions-panel h2 {
+  margin: 0;
+  font-size: 1.2rem;
+}
+
+.instructions-text {
+  margin: 0.7rem 0 0;
+  line-height: 1.45;
+  font-size: 0.95rem;
+}
+
+.instructions-actions {
+  margin-top: 0.9rem;
+  display: flex;
+  justify-content: flex-end;
 }
 
 @media (max-width: 720px) {

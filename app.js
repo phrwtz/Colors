@@ -73,6 +73,9 @@ const MIX_RESULTS = {
 
 const boardSvg = document.getElementById('board');
 const controlsEl = document.querySelector('.controls');
+const instructionsBtn = document.getElementById('instructions-btn');
+const instructionsModal = document.getElementById('instructions-modal');
+const instructionsCloseBtn = document.getElementById('instructions-close-btn');
 let undoBtn = document.getElementById('undo-btn');
 const resetBtn = document.getElementById('reset-btn');
 const newBoardBtn = document.getElementById('new-board-btn');
@@ -121,6 +124,44 @@ boardSvg.addEventListener('pointermove', onPointerMove);
 boardSvg.addEventListener('pointerup', onPointerUp);
 boardSvg.addEventListener('pointercancel', cancelDrag);
 boardSvg.addEventListener('lostpointercapture', cancelDrag);
+
+if (instructionsBtn && instructionsModal) {
+  instructionsBtn.addEventListener('click', () => {
+    if (typeof instructionsModal.showModal === 'function') {
+      instructionsModal.showModal();
+    } else {
+      instructionsModal.setAttribute('open', '');
+    }
+  });
+}
+
+if (instructionsCloseBtn && instructionsModal) {
+  instructionsCloseBtn.addEventListener('click', () => {
+    if (typeof instructionsModal.close === 'function') {
+      instructionsModal.close();
+    } else {
+      instructionsModal.removeAttribute('open');
+    }
+  });
+}
+
+if (instructionsModal) {
+  instructionsModal.addEventListener('click', (event) => {
+    const rect = instructionsModal.getBoundingClientRect();
+    const clickedOutside =
+      event.clientX < rect.left ||
+      event.clientX > rect.right ||
+      event.clientY < rect.top ||
+      event.clientY > rect.bottom;
+    if (!clickedOutside) return;
+
+    if (typeof instructionsModal.close === 'function') {
+      instructionsModal.close();
+    } else {
+      instructionsModal.removeAttribute('open');
+    }
+  });
+}
 
 if (undoBtn) {
   undoBtn.addEventListener('click', () => {
