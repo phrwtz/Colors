@@ -39,6 +39,17 @@ body {
   padding: 1rem 1rem 2rem;
 }
 
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 1rem;
+}
+
+.title-block {
+  min-width: 0;
+}
+
 .topbar h1 {
   margin: 0;
   font-size: clamp(1.6rem, 2.2vw, 2.1rem);
@@ -54,6 +65,26 @@ body {
 #score-value {
   display: inline-block;
   min-width: 1.8ch;
+}
+
+.move-error {
+  flex: 0 1 420px;
+  margin-left: auto;
+  border: 2px solid #9f2d28;
+  border-radius: 12px;
+  background: #fff2ee;
+  padding: 0.6rem 0.75rem;
+  box-shadow: 0 3px 10px var(--shadow);
+}
+
+.move-error.hidden {
+  display: none;
+}
+
+.move-error-text {
+  margin: 0;
+  font-size: 0.94rem;
+  line-height: 1.35;
 }
 
 .controls {
@@ -100,8 +131,17 @@ button:focus-visible {
 }
 
 #instructions-btn {
-  border-color: #406b22;
-  background: #eef8d9;
+  border-radius: 8px;
+  border-color: #1c4a67;
+  background: linear-gradient(180deg, #e8f7ff, #ccecff);
+  color: #0d3550;
+  font-family: "Courier New", monospace;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  font-size: 0.84rem;
+  box-shadow: 0 1px 2px rgba(13, 53, 80, 0.15);
+  align-self: flex-start;
+  margin-top: 0.2rem;
 }
 
 .legend {
@@ -242,6 +282,14 @@ button:focus-visible {
 }
 
 @media (max-width: 720px) {
+  .topbar {
+    flex-direction: column;
+  }
+
+  .move-error {
+    width: 100%;
+  }
+
   .scoreline {
     font-size: 0.98rem;
   }

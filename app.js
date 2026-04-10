@@ -12,6 +12,7 @@ const ROW_SPACING = 1.5 * HEX_RADIUS;
 const BOARD_PADDING = HEX_RADIUS + 10;
 const TILE_SELECTION_OVERLAP_THRESHOLD = 0.6;
 const DROP_CONTAINMENT_THRESHOLD = TILE_SELECTION_OVERLAP_THRESHOLD;
+const DRAG_DISTANCE_THRESHOLD = 6;
 
 const COLOR_HEX = {
   red: '#d94037',
@@ -54,6 +55,10 @@ const MIX_RESULTS = {
  * @property {boolean} insideContainer
  * @property {number[]} passedTiles
  * @property {TileColor|null} pathColor
+ * @property {Set<TileColor>} touchedTargetColors
+ * @property {boolean} touchedIllegalColor
+ * @property {boolean} touchedWhite
+ * @property {boolean} touchedMultipleTargetColors
  */
 
 /**
@@ -80,6 +85,8 @@ let undoBtn = document.getElementById('undo-btn');
 const resetBtn = document.getElementById('reset-btn');
 const newBoardBtn = document.getElementById('new-board-btn');
 const scoreValueEl = document.getElementById('score-value');
+const moveErrorModal = document.getElementById('move-error-modal');
+const moveErrorText = document.getElementById('move-error-text');
 
 if (!undoBtn && controlsEl) {
   undoBtn = document.createElement('button');
@@ -206,7 +213,11 @@ function createEmptyDragState() {
     overlapRatio: 0,
     insideContainer: false,
     passedTiles: [],
-    pathColor: null
+    pathColor: null,
+    touchedTargetColors: new Set(),
+    touchedIllegalColor: false,
+    touchedWhite: false,
+    touchedMultipleTargetColors: false
   };
 }
 
@@ -305,6 +316,21 @@ function mix(sourceColor, targetColor) {
 }
 
 /**
+ * @param {TileColor} sourceColor
+ * @returns {Set<TileColor>}
+ */
+function getLegalTargetColors(sourceColor) {
+  const legalColors = new Set();
+  for (const key of Object.keys(MIX_RESULTS)) {
+    const [source, target] = key.split(':');
+    if (source === sourceColor) {
+      legalColors.add(/** @type {TileColor} */ (target));
+    }
+  }
+  return legalColors;
+}
+
+/**
  * @param {number} sourceIndex
  * @param {number} targetIndex
  * @param {GameState} gameState
@@ -384,6 +410,7 @@ function onPointerMove(event) {
   state.dragState.pointerY = point.y;
 
   updateHoverTarget();
+  trackDragViolations();
   render();
 }
 
@@ -393,18 +420,32 @@ function onPointerMove(event) {
 function onPointerUp(event) {
   if (state.dragState.sourceIndex === null) return;
 
+  const point = svgPointFromClient(event.clientX, event.clientY);
+  state.dragState.pointerX = point.x;
+  state.dragState.pointerY = point.y;
+  updateHoverTarget();
+  trackDragViolations();
+
   const sourceIndex = state.dragState.sourceIndex;
   const target = state.dragState.hoverTarget;
+  const hasPathViolation =
+    state.dragState.touchedWhite ||
+    state.dragState.touchedIllegalColor ||
+    state.dragState.touchedMultipleTargetColors;
   const canCommit =
     typeof target === 'number' &&
     canDrop(sourceIndex, target, state) &&
-    state.dragState.overlapRatio >= DROP_CONTAINMENT_THRESHOLD;
+    state.dragState.overlapRatio >= DROP_CONTAINMENT_THRESHOLD &&
+    !hasPathViolation;
 
   if (canCommit) {
     pushHistorySnapshot();
     const updated = applyMove(sourceIndex, target, state);
     state.score += countNewWhiteTiles(state.tiles, updated.tiles);
     state.tiles = updated.tiles;
+    hideMoveError();
+  } else if (pointerMovedEnough()) {
+    showMoveError(getIllegalMoveMessage(sourceIndex));
   }
 
   if (boardSvg.hasPointerCapture(event.pointerId)) {
@@ -598,6 +639,136 @@ function updateHoverTarget() {
   state.dragState.insideContainer = bestInsideContainer;
   state.dragState.passedTiles = [...passedSet];
   state.dragState.pathColor = pathColor;
+}
+
+function trackDragViolations() {
+  const sourceIndex = state.dragState.sourceIndex;
+  const sourceColor = state.dragState.sourceColor;
+  if (sourceIndex === null || sourceColor === null) return;
+
+  const draggedPoly = getDraggedInnerPolygon();
+  const overlaps = getOverlappedTileIndices(draggedPoly, TILE_SELECTION_OVERLAP_THRESHOLD);
+  if (overlaps.length === 0) return;
+
+  const sourceComponent = collectConnectedByColor([sourceIndex], sourceColor, state.tiles);
+  const legalTargetColors = getLegalTargetColors(sourceColor);
+
+  for (const idx of overlaps) {
+    if (sourceComponent.has(idx)) continue;
+
+    const color = state.tiles[idx];
+    if (color === 'white') {
+      state.dragState.touchedWhite = true;
+      continue;
+    }
+
+    state.dragState.touchedTargetColors.add(color);
+    if (!legalTargetColors.has(color)) {
+      state.dragState.touchedIllegalColor = true;
+    }
+  }
+
+  state.dragState.touchedMultipleTargetColors = state.dragState.touchedTargetColors.size > 1;
+}
+
+/**
+ * @param {number} sourceIndex
+ * @returns {string}
+ */
+function getIllegalMoveMessage(sourceIndex) {
+  const sourceColor = state.tiles[sourceIndex];
+  const legalTargetColors = getLegalTargetColors(sourceColor);
+  const releaseTile = getBestReleaseTile(sourceIndex);
+
+  if (state.dragState.touchedMultipleTargetColors) {
+    return 'You tried to drag your tile across more then one color.';
+  }
+
+  if (releaseTile !== null) {
+    const releaseColor = state.tiles[releaseTile];
+    if (releaseColor === 'white') {
+      return 'You tried to drop your tile on a white tile.';
+    }
+    if (!legalTargetColors.has(releaseColor)) {
+      return 'You tried to drop your tile on an an illegal color.';
+    }
+    if (state.dragState.overlapRatio < DROP_CONTAINMENT_THRESHOLD) {
+      return 'You need to place the tile farther inside the target before dropping.';
+    }
+  }
+
+  if (state.dragState.touchedWhite) {
+    return 'You tried to drag your tile across a white tile.';
+  }
+  if (state.dragState.touchedIllegalColor) {
+    return 'You tried to drag your tile across an illegal color.';
+  }
+  return 'That move is not legal.';
+}
+
+/**
+ * @param {number} sourceIndex
+ * @returns {number|null}
+ */
+function getBestReleaseTile(sourceIndex) {
+  const draggedPoly = getDraggedInnerPolygon();
+  const sourceColor = state.tiles[sourceIndex];
+  const sourceComponent = collectConnectedByColor([sourceIndex], sourceColor, state.tiles);
+
+  let bestIdx = null;
+  let bestRatio = 0;
+
+  for (const tile of tilesMeta) {
+    const idx = tile.index;
+    if (sourceComponent.has(idx)) continue;
+    const ratio = overlapRatioOnTile(draggedPoly, idx);
+    if (ratio < TILE_SELECTION_OVERLAP_THRESHOLD) continue;
+    if (ratio > bestRatio) {
+      bestRatio = ratio;
+      bestIdx = idx;
+    }
+  }
+
+  return bestIdx;
+}
+
+/**
+ * @param {{x:number,y:number}[]} draggedPoly
+ * @param {number} minOverlapRatio
+ * @returns {number[]}
+ */
+function getOverlappedTileIndices(draggedPoly, minOverlapRatio) {
+  const overlaps = [];
+  for (const tile of tilesMeta) {
+    const ratio = overlapRatioOnTile(draggedPoly, tile.index);
+    if (ratio >= minOverlapRatio) {
+      overlaps.push(tile.index);
+    }
+  }
+  return overlaps;
+}
+
+/**
+ * @returns {boolean}
+ */
+function pointerMovedEnough() {
+  const dx = state.dragState.pointerX - state.dragState.startPointerX;
+  const dy = state.dragState.pointerY - state.dragState.startPointerY;
+  return Math.hypot(dx, dy) >= DRAG_DISTANCE_THRESHOLD;
+}
+
+/**
+ * @param {string} message
+ */
+function showMoveError(message) {
+  if (!moveErrorModal || !moveErrorText) return;
+  moveErrorText.textContent = message;
+  moveErrorModal.classList.remove('hidden');
+}
+
+function hideMoveError() {
+  if (!moveErrorModal) return;
+  moveErrorModal.classList.add('hidden');
 }
 
 function initializeBoardStatic() {

@@ -9,12 +9,24 @@
   <body>
     <main class="app">
       <header class="topbar">
-        <h1>Colors</h1>
-        <p class="scoreline" aria-live="polite">Score: <span id="score-value">0</span></p>
+        <div class="title-block">
+          <h1>Colors</h1>
+          <p class="scoreline" aria-live="polite">Score: <span id="score-value">0</span></p>
+        </div>
+        <button id="instructions-btn" type="button" aria-haspopup="dialog">Instructions</button>
+        <section
+          id="move-error-modal"
+          class="move-error hidden"
+          role="dialog"
+          aria-modal="false"
+          aria-live="polite"
+          aria-label="Illegal move message"
+        >
+          <p id="move-error-text" class="move-error-text"></p>
+        </section>
       </header>
 
       <section class="controls" aria-label="Game controls">
-        <button id="instructions-btn" type="button">Instructions</button>
         <button id="undo-btn" type="button">Undo</button>
         <button id="reset-btn" type="button">Reset</button>
         <button id="new-board-btn" type="button">New Board</button>
