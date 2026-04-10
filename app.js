@@ -10,8 +10,8 @@ const INNER_RADIUS = 26;
 const HEX_WIDTH = Math.sqrt(3) * HEX_RADIUS;
 const ROW_SPACING = 1.5 * HEX_RADIUS;
 const BOARD_PADDING = HEX_RADIUS + 10;
-const CLICK_MOVE_TOLERANCE = 12;
-const DROP_CONTAINMENT_THRESHOLD = 0.8;
+const TILE_SELECTION_OVERLAP_THRESHOLD = 0.6;
+const DROP_CONTAINMENT_THRESHOLD = TILE_SELECTION_OVERLAP_THRESHOLD;
 
 const COLOR_HEX = {
   red: '#d94037',
@@ -57,17 +57,38 @@ const MIX_RESULTS = {
  */
 
 /**
+ * @typedef {Object} GameSnapshot
+ * @property {TileColor[]} tiles
+ * @property {number} score
+ */
+
+/**
  * @typedef {Object} GameState
  * @property {TileColor[]} tiles
  * @property {TileColor[]} initialTiles
  * @property {DragState} dragState
  * @property {number} score
+ * @property {GameSnapshot[]} history
  */
 
 const boardSvg = document.getElementById('board');
+const controlsEl = document.querySelector('.controls');
+let undoBtn = document.getElementById('undo-btn');
 const resetBtn = document.getElementById('reset-btn');
 const newBoardBtn = document.getElementById('new-board-btn');
 const scoreValueEl = document.getElementById('score-value');
+
+if (!undoBtn && controlsEl) {
+  undoBtn = document.createElement('button');
+  undoBtn.id = 'undo-btn';
+  undoBtn.type = 'button';
+  undoBtn.textContent = 'Undo';
+  if (resetBtn) {
+    controlsEl.insertBefore(undoBtn, resetBtn);
+  } else {
+    controlsEl.prepend(undoBtn);
+  }
+}
 
 const tilesMeta = buildTileMeta();
 const indexByRowCol = new Map(tilesMeta.map((tile) => [keyOf(tile.row, tile.col), tile.index]));
@@ -87,7 +108,8 @@ const state = {
   tiles: createShuffledBoard(),
   initialTiles: [],
   dragState: createEmptyDragState(),
-  score: 0
+  score: 0,
+  history: []
 };
 state.initialTiles = [...state.tiles];
 
@@ -100,10 +122,22 @@ boardSvg.addEventListener('pointerup', onPointerUp);
 boardSvg.addEventListener('pointercancel', cancelDrag);
 boardSvg.addEventListener('lostpointercapture', cancelDrag);
 
+if (undoBtn) {
+  undoBtn.addEventListener('click', () => {
+    if (state.history.length === 0) return;
+    const previous = state.history.pop();
+    state.tiles = [...previous.tiles];
+    state.score = previous.score;
+    state.dragState = createEmptyDragState();
+    render();
+  });
+}
+
 resetBtn.addEventListener('click', () => {
   state.tiles = [...state.initialTiles];
   state.dragState = createEmptyDragState();
   state.score = 0;
+  state.history = [];
   render();
 });
 
@@ -113,6 +147,7 @@ newBoardBtn.addEventListener('click', () => {
   state.initialTiles = [...fresh];
   state.dragState = createEmptyDragState();
   state.score = 0;
+  state.history = [];
   render();
 });
 
@@ -318,37 +353,14 @@ function onPointerUp(event) {
   if (state.dragState.sourceIndex === null) return;
 
   const sourceIndex = state.dragState.sourceIndex;
-  const sourceColor = state.tiles[sourceIndex];
-  const travelDistance = distanceBetween(
-    state.dragState.startPointerX,
-    state.dragState.startPointerY,
-    state.dragState.pointerX,
-    state.dragState.pointerY
-  );
-  const isTap = travelDistance <= CLICK_MOVE_TOLERANCE;
-
-  if (isTap && isMixed(sourceColor)) {
-    const cleared = clearAdjacentMixedMatches(sourceIndex, sourceColor, state);
-    if (cleared) {
-      state.score += countNewWhiteTiles(state.tiles, cleared);
-      state.tiles = cleared;
-    }
-
-    if (boardSvg.hasPointerCapture(event.pointerId)) {
-      boardSvg.releasePointerCapture(event.pointerId);
-    }
-    state.dragState = createEmptyDragState();
-    render();
-    return;
-  }
-
   const target = state.dragState.hoverTarget;
   const canCommit =
     typeof target === 'number' &&
     canDrop(sourceIndex, target, state) &&
-    state.dragState.containmentRatio >= DROP_CONTAINMENT_THRESHOLD;
+    state.dragState.overlapRatio >= DROP_CONTAINMENT_THRESHOLD;
 
   if (canCommit) {
+    pushHistorySnapshot();
     const updated = applyMove(sourceIndex, target, state);
     state.score += countNewWhiteTiles(state.tiles, updated.tiles);
     state.tiles = updated.tiles;
@@ -366,6 +378,83 @@ function cancelDrag() {
   if (state.dragState.sourceIndex === null) return;
   state.dragState = createEmptyDragState();
   render();
+}
+
+/**
+ * @param {number[]} seeds
+ * @param {TileColor} color
+ * @param {TileColor[]} tiles
+ * @returns {Set<number>}
+ */
+function collectConnectedByColor(seeds, color, tiles) {
+  const connected = new Set();
+  const queue = [];
+
+  for (const idx of seeds) {
+    if (!Number.isInteger(idx)) continue;
+    if (idx < 0 || idx >= tiles.length) continue;
+    if (tiles[idx] !== color) continue;
+    if (connected.has(idx)) continue;
+    connected.add(idx);
+    queue.push(idx);
+  }
+
+  while (queue.length > 0) {
+    const current = queue.shift();
+    const neighbors = getNeighbors(current);
+    for (const next of neighbors) {
+      if (tiles[next] !== color) continue;
+      if (connected.has(next)) continue;
+      connected.add(next);
+      queue.push(next);
+    }
+  }
+
+  return connected;
+}
+
+/**
+ * @param {Set<number>} sourceComponent
+ * @param {TileColor} sourceColor
+ * @param {TileColor[]} tiles
+ * @returns {Set<number>}
+ */
+function getAdjacentLegalTargets(sourceComponent, sourceColor, tiles) {
+  const candidates = new Set();
+  for (const idx of sourceComponent) {
+    const neighbors = getNeighbors(idx);
+    for (const next of neighbors) {
+      if (sourceComponent.has(next)) continue;
+      if (!isEligibleTarget(sourceColor, tiles[next])) continue;
+      candidates.add(next);
+    }
+  }
+  return candidates;
+}
+
+/**
+ * @param {{x:number,y:number}[]} draggedPoly
+ * @param {number} tileIndex
+ * @returns {number}
+ */
+function overlapAreaOnTile(draggedPoly, tileIndex) {
+  const targetPoly = getInnerPolygonAtIndex(tileIndex);
+  const overlapPoly = clipPolygonConvex(draggedPoly, targetPoly);
+  return Math.abs(polygonArea(overlapPoly));
+}
+
+/**
+ * @param {{x:number,y:number}[]} draggedPoly
+ * @param {number} tileIndex
+ * @returns {number}
+ */
+function overlapRatioOnTile(draggedPoly, tileIndex) {
+  const targetPoly = getInnerPolygonAtIndex(tileIndex);
+  const overlapPoly = clipPolygonConvex(draggedPoly, targetPoly);
+  const overlapArea = Math.abs(polygonArea(overlapPoly));
+  const targetArea = Math.abs(polygonArea(targetPoly));
+  if (targetArea <= 0) return 0;
+  return overlapArea / targetArea;
 }
 
 function updateHoverTarget() {
@@ -393,36 +482,18 @@ function updateHoverTarget() {
     return;
   }
 
-  const overlapAreaByIndex = new Map();
-  const overlappedEligible = [];
-  for (const tile of tilesMeta) {
-    const idx = tile.index;
-    if (idx === sourceIndex) continue;
-
-    const targetColor = state.tiles[idx];
-    if (!isEligibleTarget(sourceColor, targetColor)) continue;
-
-    const targetPoly = getInnerPolygonAtIndex(idx);
-    const overlapPoly = clipPolygonConvex(draggedPoly, targetPoly);
-    const overlapArea = Math.abs(polygonArea(overlapPoly));
-    if (overlapArea <= 0) continue;
-
-    overlapAreaByIndex.set(idx, overlapArea);
-    overlappedEligible.push(idx);
-  }
+  const sourceComponent = collectConnectedByColor([sourceIndex], sourceColor, state.tiles);
+  const entryCandidates = getAdjacentLegalTargets(sourceComponent, sourceColor, state.tiles);
 
   /** @type {TileColor|null} */
   let pathColor = state.dragState.pathColor;
-  const passedSet = new Set(
-    state.dragState.passedTiles.filter((idx) => state.tiles[idx] === state.dragState.pathColor)
-  );
-
   if (pathColor === null) {
     let bestFirst = null;
     let bestArea = -1;
-    for (const idx of overlappedEligible) {
-      if (!getNeighbors(sourceIndex).includes(idx)) continue;
-      const area = overlapAreaByIndex.get(idx) ?? 0;
+    for (const idx of entryCandidates) {
+      const ratio = overlapRatioOnTile(draggedPoly, idx);
+      if (ratio < TILE_SELECTION_OVERLAP_THRESHOLD) continue;
+      const area = overlapAreaOnTile(draggedPoly, idx);
       if (area > bestArea) {
         bestArea = area;
         bestFirst = idx;
@@ -431,7 +502,6 @@ function updateHoverTarget() {
 
     if (bestFirst !== null) {
       pathColor = state.tiles[bestFirst];
-      passedSet.add(bestFirst);
     }
   }
 
@@ -445,46 +515,37 @@ function updateHoverTarget() {
     return;
   }
 
-  const overlappedPathColor = overlappedEligible.filter((idx) => state.tiles[idx] === pathColor);
-  let changed = true;
-  while (changed) {
-    changed = false;
-    for (const idx of overlappedPathColor) {
-      if (passedSet.has(idx)) continue;
-      const neighbors = getNeighbors(idx);
-      const reachableFromPath =
-        neighbors.includes(sourceIndex) || neighbors.some((n) => passedSet.has(n));
-      if (!reachableFromPath) continue;
-      passedSet.add(idx);
-      changed = true;
-    }
-  }
+  const entryOfPathColor = [...entryCandidates].filter((idx) => state.tiles[idx] === pathColor);
+  const pathRegion = collectConnectedByColor(entryOfPathColor, pathColor, state.tiles);
+  const passedSet = new Set();
 
   let bestTarget = null;
   let bestContainment = 0;
   let bestOverlap = 0;
   let bestInsideContainer = false;
 
-  for (const idx of passedSet) {
-    const targetColor = state.tiles[idx];
-    if (targetColor !== pathColor) continue;
-
+  for (const idx of pathRegion) {
     const targetPoly = getInnerPolygonAtIndex(idx);
-    const targetOuterPoly = getOuterPolygonAtIndex(idx);
     const clipped = clipPolygonConvex(draggedPoly, targetPoly);
     const overlapArea = Math.abs(polygonArea(clipped));
-    const insideContainer = polygonInsideConvex(draggedPoly, targetOuterPoly);
 
     if (overlapArea <= 0) continue;
+    const targetArea = Math.abs(polygonArea(targetPoly));
+    const overlapRatio = targetArea > 0 ? overlapArea / targetArea : 0;
+    if (overlapRatio < TILE_SELECTION_OVERLAP_THRESHOLD) continue;
+    passedSet.add(idx);
 
-    const containment = overlapArea > 0 ? overlapArea / draggedArea : 0;
+    const targetOuterPoly = getOuterPolygonAtIndex(idx);
+    const insideContainer = polygonInsideConvex(draggedPoly, targetOuterPoly);
+
+    const containment = overlapRatio;
     const isBetterCandidate =
       (insideContainer && !bestInsideContainer) ||
       (insideContainer === bestInsideContainer && containment > bestContainment);
 
     if (isBetterCandidate) {
       bestContainment = containment;
-      bestOverlap = overlapArea > 0 ? overlapArea / Math.abs(polygonArea(targetPoly)) : 0;
+      bestOverlap = overlapArea / Math.abs(polygonArea(targetPoly));
       bestTarget = idx;
       bestInsideContainer = insideContainer;
     }
@@ -504,7 +565,8 @@ function initializeBoardStatic() {
 
   for (const tile of tilesMeta) {
     const outerGroup = createSvgEl('g', {
-      class: 'tile-shell'
+      class: 'tile-shell',
+      'data-index': String(tile.index)
     });
     const innerGroup = createSvgEl('g', {
       class: 'tile-group',
@@ -531,14 +593,32 @@ function initializeBoardStatic() {
 
 function render() {
   renderScore();
+  renderUndoState();
+  renderTileSelection();
   renderInnerTiles();
   renderPreview();
   renderDragLayer();
 }
 
+function renderTileSelection() {
+  const selected = new Set(state.dragState.passedTiles);
+  const shells = outerLayer.querySelectorAll('.tile-shell');
+  shells.forEach((shell) => {
+    const idx = Number(shell.getAttribute('data-index'));
+    shell.classList.toggle('moving-selected', selected.has(idx));
+  });
+}
+
 function renderScore() {
   if (!scoreValueEl) return;
   scoreValueEl.textContent = String(state.score);
+}
+
+function renderUndoState() {
+  if (!undoBtn) return;
+  undoBtn.textContent = 'Undo';
+  const disabled = state.history.length === 0;
+  undoBtn.disabled = disabled;
 }
 
 function renderInnerTiles() {
@@ -629,45 +709,6 @@ function getInnerPolygonAtIndex(index) {
 function getOuterPolygonAtIndex(index) {
   const tile = tilesMeta[index];
   return hexPoints(tile.cx, tile.cy, HEX_RADIUS);
-}
-
-/**
- * If a mixed tile is tapped and has at least one adjacent tile of the same mixed color,
- * search the connected same-color group (including the tapped tile) and clear it only
- * when at least three tiles are in that group.
- * @param {number} sourceIndex
- * @param {TileColor} sourceColor
- * @param {GameState} gameState
- * @returns {TileColor[]|null}
- */
-function clearAdjacentMixedMatches(sourceIndex, sourceColor, gameState) {
-  if (!isMixed(sourceColor)) return null;
-
-  const neighbors = getNeighbors(sourceIndex);
-  const seedMatches = neighbors.filter((idx) => gameState.tiles[idx] === sourceColor);
-  if (seedMatches.length < 1) return null;
-
-  const toClear = new Set([sourceIndex, ...seedMatches]);
-  const queue = [sourceIndex, ...seedMatches];
-
-  while (queue.length > 0) {
-    const current = queue.shift();
-    const currentNeighbors = getNeighbors(current);
-    for (const next of currentNeighbors) {
-      if (gameState.tiles[next] !== sourceColor) continue;
-      if (toClear.has(next)) continue;
-      toClear.add(next);
-      queue.push(next);
-    }
-  }
-
-  if (toClear.size < 3) return null;
-
-  const nextTiles = [...gameState.tiles];
-  for (const idx of toClear) {
-    nextTiles[idx] = 'white';
-  }
-  return nextTiles;
 }
 
 /**
@@ -904,19 +945,6 @@ function pointsToAttr(points) {
 }
 
 /**
- * @param {number} x1
- * @param {number} y1
- * @param {number} x2
- * @param {number} y2
- * @returns {number}
- */
-function distanceBetween(x1, y1, x2, y2) {
-  const dx = x2 - x1;
-  const dy = y2 - y1;
-  return Math.sqrt(dx * dx + dy * dy);
-}
-
-/**
  * @param {TileColor[]} before
  * @param {TileColor[]} after
  * @returns {number}
@@ -929,4 +957,11 @@ function countNewWhiteTiles(before, after) {
     }
   }
   return count;
+}
+
+function pushHistorySnapshot() {
+  state.history.push({
+    tiles: [...state.tiles],
+    score: state.score
+  });
 }

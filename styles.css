@@ -83,18 +83,51 @@ button:focus-visible {
   outline-offset: 2px;
 }
 
-.legend {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.65rem 1rem;
-  margin-bottom: 1rem;
+#undo-btn {
+  display: inline-block;
+  visibility: visible;
+  min-width: 7.2rem;
+  border-color: #0e4177;
+  background: #e9f3ff;
 }
 
-.legend-item {
+#undo-btn:disabled {
+  opacity: 0.55;
+  color: #44515f;
+  border-style: solid;
+  background: #e2e7ee;
+  cursor: default;
+}
+
+.legend {
+  display: block;
+  margin-bottom: 1rem;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+.mixline {
   display: inline-flex;
   align-items: center;
-  gap: 0.35rem;
-  font-size: 0.94rem;
+  gap: 0.5rem;
+  min-width: max-content;
+}
+
+.mix-eq {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.28rem;
+  font-size: 0.92rem;
+}
+
+.mix-label {
+  font-weight: 600;
+}
+
+.mix-symbol,
+.mix-sep {
+  opacity: 0.9;
+  font-weight: 700;
 }
 
 .swatch {
@@ -135,6 +168,12 @@ button:focus-visible {
   stroke: #33434d;
   stroke-width: 1.8;
   pointer-events: none;
+}
+
+.tile-shell.moving-selected .outer {
+  fill: rgba(104, 160, 255, 0.18);
+  stroke: #113b6e;
+  stroke-width: 2.8;
 }
 
 .tile-group .inner {

@@ -14,18 +14,37 @@
       </header>
 
       <section class="controls" aria-label="Game controls">
+        <button id="undo-btn" type="button">Undo</button>
         <button id="reset-btn" type="button">Reset</button>
         <button id="new-board-btn" type="button">New Board</button>
       </section>
 
       <section class="legend" aria-label="Color legend">
-        <span class="legend-item"><span class="swatch red"></span>Red</span>
-        <span class="legend-item"><span class="swatch blue"></span>Blue</span>
-        <span class="legend-item"><span class="swatch yellow"></span>Yellow</span>
-        <span class="legend-item"><span class="swatch purple"></span>Purple</span>
-        <span class="legend-item"><span class="swatch green"></span>Green</span>
-        <span class="legend-item"><span class="swatch orange"></span>Orange</span>
-        <span class="legend-item"><span class="swatch white"></span>White</span>
+        <div class="mixline" role="note" aria-label="Color mixing equations">
+          <span class="mix-eq">
+            <span class="swatch blue"></span><span class="mix-label">Blue</span>
+            <span class="mix-symbol">+</span>
+            <span class="swatch red"></span><span class="mix-label">Red</span>
+            <span class="mix-symbol">=</span>
+            <span class="swatch orange"></span><span class="mix-label">Orange</span>
+          </span>
+          <span class="mix-sep">|</span>
+          <span class="mix-eq">
+            <span class="swatch blue"></span><span class="mix-label">Blue</span>
+            <span class="mix-symbol">+</span>
+            <span class="swatch yellow"></span><span class="mix-label">Yellow</span>
+            <span class="mix-symbol">=</span>
+            <span class="swatch green"></span><span class="mix-label">Green</span>
+          </span>
+          <span class="mix-sep">|</span>
+          <span class="mix-eq">
+            <span class="swatch red"></span><span class="mix-label">Red</span>
+            <span class="mix-symbol">+</span>
+            <span class="swatch green"></span><span class="mix-label">Green</span>
+            <span class="mix-symbol">=</span>
+            <span class="swatch yellow"></span><span class="mix-label">Yellow</span>
+          </span>
+        </div>
       </section>
 
       <section class="board-wrap" aria-label="Colors board">
