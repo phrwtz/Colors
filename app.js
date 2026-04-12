@@ -14,9 +14,7 @@ const ROW_SPACING = 1.5 * HEX_RADIUS;
 const BOARD_PADDING = HEX_RADIUS + 10;
 
 const DRAG_SELECTION_THRESHOLD = 0.6;
-const BETWEEN_TILES_CONTACT_THRESHOLD = 0.1;
-const BETWEEN_TILES_DIRECTION_TOLERANCE_DEG = 18;
-const MIN_DIRECTION_STEP_DISTANCE = 1.5;
+const PATH_COLOR_OVERLAP_THRESHOLD = 0.2001;
 const DROP_CONTAINMENT_THRESHOLD = 0.75;
 const DRAG_DISTANCE_THRESHOLD = 6;
 
@@ -29,9 +27,9 @@ const COLOR_HEX = {
   red: '#d94037',
   blue: '#2763d8',
   yellow: '#f0c419',
-  purple: '#b58ae0',
-  green: '#2fa36b',
-  orange: '#f29b5f',
+  purple: '#b45be7',
+  green: '#1fb85f',
+  orange: '#f68b2d',
   white: '#ffffff'
 };
 
@@ -68,15 +66,7 @@ const COMPONENT_KEY_TO_COLOR = {
  * @property {number|null} hoverTarget
  * @property {number} containmentRatio
  * @property {number} overlapRatio
- * @property {Set<TileColor>} touchedTargetColors
- * @property {boolean} touchedIllegalColor
- * @property {boolean} touchedWhite
- * @property {boolean} touchedMultipleTargetColors
- * @property {boolean} touchedBetweenTiles
- * @property {number} lastTrackedPointerX
- * @property {number} lastTrackedPointerY
- * @property {TileColor|null} chosenTravelColor
- * @property {boolean} touchedSourceAfterChoosingColor
+ * @property {TileColor[]} traversedColors
  */
 
 /**
@@ -349,15 +339,7 @@ function createEmptyDragState() {
     hoverTarget: null,
     containmentRatio: 0,
     overlapRatio: 0,
-    touchedTargetColors: new Set(),
-    touchedIllegalColor: false,
-    touchedWhite: false,
-    touchedMultipleTargetColors: false,
-    touchedBetweenTiles: false,
-    lastTrackedPointerX: 0,
-    lastTrackedPointerY: 0,
-    chosenTravelColor: null,
-    touchedSourceAfterChoosingColor: false
+    traversedColors: []
   };
 }
 
@@ -906,24 +888,6 @@ function mix(sourceColor, targetColor) {
 }
 
 /**
- * @param {TileColor} sourceColor
- * @returns {Set<TileColor>}
- */
-function getLegalTargetColors(sourceColor) {
-  const legalColors = new Set();
-
-  for (const color of Object.keys(COLOR_HEX)) {
-    const targetColor = /** @type {TileColor} */ (color);
-    if (targetColor === sourceColor || targetColor === 'white') continue;
-    if (mix(sourceColor, targetColor) !== null) {
-      legalColors.add(targetColor);
-    }
-  }
-
-  return legalColors;
-}
-
-/**
  * @param {number} sourceIndex
  * @param {number} targetIndex
  * @param {GameState} gameState
@@ -937,52 +901,7 @@ function canDrop(sourceIndex, targetIndex, gameState) {
   if (!isMovable(source) || !isMovable(target)) return false;
   if (mix(source, target) === null) return false;
 
-  return hasTravelPath(sourceIndex, targetIndex, gameState);
-}
-
-/**
- * A move is reachable when the tile can travel on its own color first,
- * then optionally switch once to the target color, without switching back.
- * @param {number} sourceIndex
- * @param {number} targetIndex
- * @param {GameState} gameState
- * @returns {boolean}
- */
-function hasTravelPath(sourceIndex, targetIndex, gameState) {
-  const sourceColor = gameState.tiles[sourceIndex];
-  const targetColor = gameState.tiles[targetIndex];
-
-  const queue = [{ index: sourceIndex, switched: false }];
-  const visited = new Set([`${sourceIndex}:0`]);
-
-  while (queue.length > 0) {
-    const current = queue.shift();
-    if (!current) break;
-
-    const neighbors = getNeighbors(current.index);
-    for (const next of neighbors) {
-      const color = gameState.tiles[next];
-
-      if (color === sourceColor) {
-        if (current.switched) continue;
-        const key = `${next}:0`;
-        if (visited.has(key)) continue;
-        visited.add(key);
-        queue.push({ index: next, switched: false });
-        continue;
-      }
-
-      if (color === targetColor) {
-        if (next === targetIndex) return true;
-        const key = `${next}:1`;
-        if (visited.has(key)) continue;
-        visited.add(key);
-        queue.push({ index: next, switched: true });
-      }
-    }
-  }
-
-  return false;
+  return true;
 }
 
 /**
@@ -1029,9 +948,7 @@ function onPointerDown(event) {
     startPointerX: point.x,
     startPointerY: point.y,
     pointerX: point.x,
-    pointerY: point.y,
-    lastTrackedPointerX: point.x,
-    lastTrackedPointerY: point.y
+    pointerY: point.y
   };
 
   boardSvg.setPointerCapture(event.pointerId);
@@ -1070,19 +987,30 @@ function onPointerUp(event) {
   const sourceIndex = state.dragState.sourceIndex;
   const target = state.dragState.hoverTarget;
   const containment = state.dragState.containmentRatio;
-  const canCommit =
+  const hasValidTarget =
     typeof target === 'number' &&
     canDrop(sourceIndex, target, state) &&
-    isDragPathLegal() &&
     containment >= DROP_CONTAINMENT_THRESHOLD;
 
-  if (canCommit) {
-    state.history.push({
-      tiles: [...state.tiles]
-    });
-    const updated = applyMove(sourceIndex, target, state);
-    state.tiles = updated.tiles;
-    hideMoveError(true);
+  if (hasValidTarget) {
+    const sourceColor = state.tiles[sourceIndex];
+    const targetColor = state.tiles[target];
+    const firstIllegalColor = getFirstIllegalTraversedColor(
+      sourceColor,
+      targetColor,
+      state.dragState.traversedColors
+    );
+
+    if (firstIllegalColor === null) {
+      state.history.push({
+        tiles: [...state.tiles]
+      });
+      const updated = applyMove(sourceIndex, target, state);
+      state.tiles = updated.tiles;
+      hideMoveError(true);
+    } else {
+      showMoveError(getIllegalPathColorMessage(sourceColor, firstIllegalColor, targetColor));
+    }
   } else if (pointerMovedEnough()) {
     showMoveError(getIllegalMoveMessage(sourceIndex));
   }
@@ -1093,19 +1021,6 @@ function onPointerUp(event) {
 
   state.dragState = createEmptyDragState();
   render();
-}
-
-/**
- * @returns {boolean}
- */
-function isDragPathLegal() {
-  return (
-    !state.dragState.touchedWhite &&
-    !state.dragState.touchedIllegalColor &&
-    !state.dragState.touchedMultipleTargetColors &&
-    !state.dragState.touchedBetweenTiles &&
-    !state.dragState.touchedSourceAfterChoosingColor
-  );
 }
 
 function cancelDrag() {
@@ -1159,145 +1074,50 @@ function updateHoverTarget() {
 
 function trackDragPath() {
   const sourceIndex = state.dragState.sourceIndex;
-  const sourceColor = state.dragState.sourceColor;
-  if (sourceIndex === null || sourceColor === null) return;
+  if (sourceIndex === null) return;
 
   const draggedPoly = getDraggedInnerPolygon();
-  const stepDx = state.dragState.pointerX - state.dragState.lastTrackedPointerX;
-  const stepDy = state.dragState.pointerY - state.dragState.lastTrackedPointerY;
-  const stepDistance = Math.hypot(stepDx, stepDy);
-  state.dragState.lastTrackedPointerX = state.dragState.pointerX;
-  state.dragState.lastTrackedPointerY = state.dragState.pointerY;
-
-  const legalTargetColors = getLegalTargetColors(sourceColor);
-  const seamOverlaps = getOverlappedTileIndices(draggedPoly, BETWEEN_TILES_CONTACT_THRESHOLD);
-  const overlaps = getOverlappedTileIndices(draggedPoly, DRAG_SELECTION_THRESHOLD);
-
-  // If there is no clearly centered tile and we are straddling two tiles,
-  // use direction of motion to decide whether this is a legal transition
-  // (toward one tile) or an illegal between-tiles move.
-  if (
-    pointerMovedEnough() &&
-    stepDistance >= MIN_DIRECTION_STEP_DISTANCE &&
-    overlaps.length === 0 &&
-    seamOverlaps.length >= 2
-  ) {
-    const seamPair = getPrimarySeamPair(seamOverlaps);
-    if (seamPair) {
-      const [firstIdx, secondIdx] = seamPair;
-      const firstColor = state.tiles[firstIdx];
-      const secondColor = state.tiles[secondIdx];
-
-      if (firstColor === secondColor) {
-        observePathColor(firstColor, sourceColor, legalTargetColors);
-        state.dragState.touchedMultipleTargetColors = state.dragState.touchedTargetColors.size > 1;
-        return;
-      }
-
-      if (isMotionBetweenTiles(stepDx, stepDy, firstIdx, secondIdx)) {
-        state.dragState.touchedBetweenTiles = true;
-        return;
-      }
-    }
-  }
-
+  const overlaps = getOverlappedTileIndices(draggedPoly, PATH_COLOR_OVERLAP_THRESHOLD);
   if (overlaps.length === 0) return;
+
   for (const idx of overlaps) {
     if (idx === sourceIndex) continue;
-    observePathColor(state.tiles[idx], sourceColor, legalTargetColors);
+    observeTraversedColor(state.tiles[idx]);
   }
-
-  state.dragState.touchedMultipleTargetColors = state.dragState.touchedTargetColors.size > 1;
 }
 
 /**
  * @param {TileColor} color
+ */
+function observeTraversedColor(color) {
+  if (!state.dragState.traversedColors.includes(color)) {
+    state.dragState.traversedColors.push(color);
+  }
+}
+
+/**
  * @param {TileColor} sourceColor
- * @param {Set<TileColor>} legalTargetColors
+ * @param {TileColor} targetColor
+ * @param {TileColor[]} traversedColors
+ * @returns {TileColor|null}
  */
-function observePathColor(color, sourceColor, legalTargetColors) {
-  if (color === 'white') {
-    state.dragState.touchedWhite = true;
-    return;
-  }
-  if (color === sourceColor) {
-    if (state.dragState.chosenTravelColor !== null) {
-      state.dragState.touchedSourceAfterChoosingColor = true;
+function getFirstIllegalTraversedColor(sourceColor, targetColor, traversedColors) {
+  for (const color of traversedColors) {
+    if (color !== sourceColor && color !== targetColor) {
+      return color;
     }
-    return;
   }
-
-  state.dragState.touchedTargetColors.add(color);
-  if (!legalTargetColors.has(color)) {
-    state.dragState.touchedIllegalColor = true;
-    return;
-  }
-
-  if (state.dragState.chosenTravelColor === null) {
-    state.dragState.chosenTravelColor = color;
-  } else if (state.dragState.chosenTravelColor !== color) {
-    state.dragState.touchedMultipleTargetColors = true;
-  }
+  return null;
 }
 
 /**
- * Pick the seam pair to evaluate from overlapped tiles.
- * @param {number[]} overlappedIndices
- * @returns {[number, number]|null}
+ * @param {TileColor} sourceColor
+ * @param {TileColor} illegalColor
+ * @param {TileColor} targetColor
+ * @returns {string}
  */
-function getPrimarySeamPair(overlappedIndices) {
-  if (overlappedIndices.length < 2) return null;
-
-  let bestPair = null;
-  let bestDistance = Infinity;
-
-  for (let i = 0; i < overlappedIndices.length; i += 1) {
-    const a = overlappedIndices[i];
-    const aNeighbors = new Set(getNeighbors(a));
-    for (let j = i + 1; j < overlappedIndices.length; j += 1) {
-      const b = overlappedIndices[j];
-      if (!aNeighbors.has(b)) continue;
-
-      const dx = tilesMeta[a].cx - tilesMeta[b].cx;
-      const dy = tilesMeta[a].cy - tilesMeta[b].cy;
-      const distance = Math.hypot(dx, dy);
-      if (distance < bestDistance) {
-        bestDistance = distance;
-        bestPair = [a, b];
-      }
-    }
-  }
-
-  if (bestPair) return /** @type {[number, number]} */ (bestPair);
-  return [overlappedIndices[0], overlappedIndices[1]];
-}
-
-/**
- * @param {number} motionDx
- * @param {number} motionDy
- * @param {number} firstIndex
- * @param {number} secondIndex
- * @returns {boolean}
- */
-function isMotionBetweenTiles(motionDx, motionDy, firstIndex, secondIndex) {
-  const motionMag = Math.hypot(motionDx, motionDy);
-  if (motionMag < MIN_DIRECTION_STEP_DISTANCE) return false;
-
-  const betweenDx = tilesMeta[secondIndex].cx - tilesMeta[firstIndex].cx;
-  const betweenDy = tilesMeta[secondIndex].cy - tilesMeta[firstIndex].cy;
-  const betweenMag = Math.hypot(betweenDx, betweenDy);
-  if (betweenMag < 1e-6) return false;
-
-  const dot = motionDx * betweenDx + motionDy * betweenDy;
-  const cosTheta = Math.max(-1, Math.min(1, dot / (motionMag * betweenMag)));
-  const angleDeg = (Math.acos(cosTheta) * 180) / Math.PI;
-  const distanceTo60 = Math.abs(angleDeg - 60);
-  const distanceTo120 = Math.abs(angleDeg - 120);
-
-  return (
-    distanceTo60 <= BETWEEN_TILES_DIRECTION_TOLERANCE_DEG ||
-    distanceTo120 <= BETWEEN_TILES_DIRECTION_TOLERANCE_DEG
-  );
+function getIllegalPathColorMessage(sourceColor, illegalColor, targetColor) {
+  return `You passed ${colorTilePhrase(sourceColor)} though ${colorTilePhrase(illegalColor)} before dropping it on ${colorTilePhrase(targetColor)}. That is illegal and the tile returned home.`;
 }
 
 /**
@@ -1307,7 +1127,6 @@ function isMotionBetweenTiles(motionDx, motionDy, firstIndex, secondIndex) {
 function getIllegalMoveMessage(sourceIndex) {
   const sourceColor = state.tiles[sourceIndex];
   const sourceTile = colorTilePhrase(sourceColor);
-  const legalTargetColors = getLegalTargetColors(sourceColor);
   const release = getBestReleaseCandidate(sourceIndex);
   const releaseTile = release.index;
 
@@ -1347,31 +1166,6 @@ function getIllegalMoveMessage(sourceIndex) {
     return `You tried to drop ${sourceTile} on ${colorTilePhrase(releaseColor)}. That is illegal.`;
   }
 
-  // 3) Finally, check whether the traveled path is legal.
-  if (state.dragState.touchedBetweenTiles) {
-    return 'You moved your tile between two tiles. That is illegal: your tile must move from one tile to another one its way to its target.';
-  }
-  if (state.dragState.touchedMultipleTargetColors) {
-    return 'You moved your tile over more than one target color. That is illegal.';
-  }
-  if (state.dragState.touchedSourceAfterChoosingColor) {
-    return "You moved your tile back to its own color after choosing a target color. That is illegal.";
-  }
-  if (state.dragState.touchedWhite) {
-    return 'You tried to move your tile over an empty space. That is illegal.';
-  }
-  if (state.dragState.touchedIllegalColor) {
-    const illegalPathColors = [...state.dragState.touchedTargetColors].filter(
-      (color) => !legalTargetColors.has(color)
-    );
-    if (illegalPathColors.length > 0) {
-      return `You moved ${sourceTile} across ${formatColorList(illegalPathColors)}. That travel color is illegal.`;
-    }
-    return `You moved ${sourceTile} across an illegal travel color.`;
-  }
-  if (!canDrop(sourceIndex, releaseTile, state)) {
-    return `You tried to place ${sourceTile} on ${colorTilePhrase(releaseColor)}, but there is no legal path to that target.`;
-  }
   return `You tried to place ${sourceTile} on ${colorTilePhrase(releaseColor)} in an illegal way.`;
 }
 

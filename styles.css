@@ -10,9 +10,9 @@
   --red: #d94037;
   --blue: #2763d8;
   --yellow: #f0c419;
-  --purple: #b58ae0;
-  --green: #2fa36b;
-  --orange: #f29b5f;
+  --purple: #b45be7;
+  --green: #1fb85f;
+  --orange: #f68b2d;
   --white: #ffffff;
 }
 
@@ -138,6 +138,23 @@ body {
   letter-spacing: 0.04em;
 }
 
+.title-block .splash-word {
+  font-family: "Comic Sans MS", "Comic Sans", cursive;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.title-block .splash-letter {
+  display: inline-block;
+}
+
+.title-block .splash-letter:nth-child(1) { color: var(--red); }
+.title-block .splash-letter:nth-child(2) { color: var(--blue); }
+.title-block .splash-letter:nth-child(3) { color: var(--yellow); }
+.title-block .splash-letter:nth-child(4) { color: var(--purple); }
+.title-block .splash-letter:nth-child(5) { color: var(--orange); }
+.title-block .splash-letter:nth-child(6) { color: var(--green); }
+
 .subtitle {
   margin: 0.2rem 0 0;
   opacity: 0.85;
@@ -233,55 +250,6 @@ button:focus-visible {
   outline-offset: 2px;
 }
 
-.legend {
-  display: flex;
-  flex-wrap: nowrap;
-  gap: 0.9rem;
-  margin-bottom: 1rem;
-  align-items: center;
-  overflow-x: auto;
-  padding-bottom: 0.15rem;
-  white-space: nowrap;
-}
-
-.mix-equation {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.42rem;
-  padding: 0.3rem 0.5rem;
-  border: 1px solid rgba(43, 56, 64, 0.25);
-  border-radius: 999px;
-  background: rgba(255, 253, 248, 0.8);
-}
-
-.legend-op {
-  font-weight: 700;
-  opacity: 0.8;
-}
-
-.legend-item {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
-  font-size: 0.94rem;
-}
-
-.swatch {
-  width: 0.95rem;
-  height: 0.95rem;
-  border: 1px solid #263238;
-  border-radius: 3px;
-  display: inline-block;
-}
-
-.red { background: var(--red); }
-.blue { background: var(--blue); }
-.yellow { background: var(--yellow); }
-.purple { background: var(--purple); }
-.green { background: var(--green); }
-.orange { background: var(--orange); }
-.white { background: var(--white); }
-
 .board-wrap {
   background: linear-gradient(160deg, #fffaf0, #fff5e8);
   border: 2px solid #2a353a;
@@ -343,7 +311,6 @@ button:focus-visible {
 }
 
 .game-screen.demo-mode .controls,
-.game-screen.demo-mode .legend,
 .game-screen.demo-mode .subtitle {
   display: none;
 }
