@@ -105,6 +105,7 @@ const moveErrorText = document.getElementById('move-error-text');
 const moveErrorOkBtn = document.getElementById('move-error-ok-btn');
 const moveErrorActions = moveErrorModal?.querySelector('.move-error-actions');
 const scoreValueEl = document.getElementById('score-value');
+const bestScoreValueEl = document.getElementById('best-score-value');
 
 const landingScreen = document.getElementById('landing-screen');
 const instructionsScreen = document.getElementById('instructions-screen');
@@ -150,6 +151,9 @@ const appState = {
   /** @type {PlayMode} */
   mode: 'play'
 };
+
+const BEST_SCORE_STORAGE_KEY = 'splash_best_score';
+let bestScore = readBestScore();
 
 /** @type {{tiles:TileColor[], initialTiles:TileColor[], history:GameSnapshot[]}|null} */
 let playSnapshot = null;
@@ -1474,6 +1478,39 @@ function updateScore() {
   if (!scoreValueEl) return;
   const score = state.tiles.reduce((acc, tile) => (tile === 'white' ? acc + 1 : acc), 0);
   scoreValueEl.textContent = String(score);
+  updateBestScore(score);
+}
+
+/**
+ * @returns {number|null}
+ */
+function readBestScore() {
+  try {
+    const raw = window.localStorage.getItem(BEST_SCORE_STORAGE_KEY);
+    if (raw === null) return null;
+    const value = Number.parseInt(raw, 10);
+    if (!Number.isFinite(value) || value <= 0) return null;
+    return value;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * @param {number} score
+ */
+function updateBestScore(score) {
+  if (score > 0 && (bestScore === null || score > bestScore)) {
+    bestScore = score;
+    try {
+      window.localStorage.setItem(BEST_SCORE_STORAGE_KEY, String(score));
+    } catch {
+      // Ignore storage failures (private mode / disabled storage).
+    }
+  }
+
+  if (!bestScoreValueEl) return;
+  bestScoreValueEl.textContent = bestScore === null ? 'No score yet' : String(bestScore);
 }
 
 function updateUndoButtonState() {
