@@ -15,7 +15,7 @@ const BOARD_PADDING = HEX_RADIUS + 10;
 
 const DRAG_SELECTION_THRESHOLD = 0.6;
 const PATH_COLOR_OVERLAP_THRESHOLD = 0.2001;
-const DROP_CONTAINMENT_THRESHOLD = 0.75;
+const DROP_CONTAINMENT_THRESHOLD = 0.6;
 const DRAG_DISTANCE_THRESHOLD = 6;
 
 const DEMO_INTRO_MESSAGE = 'Click through these message for an intro into how Colors is played.';
