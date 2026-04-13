@@ -221,6 +221,15 @@ body {
   flex-wrap: wrap;
 }
 
+.no-moves-notice {
+  margin: 0.1rem 0 0.75rem;
+  color: #c32020;
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1.2;
+  text-align: center;
+}
+
 button {
   border: 2px solid var(--line);
   border-radius: 999px;

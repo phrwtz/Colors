@@ -106,6 +106,7 @@ const moveErrorOkBtn = document.getElementById('move-error-ok-btn');
 const moveErrorActions = moveErrorModal?.querySelector('.move-error-actions');
 const scoreValueEl = document.getElementById('score-value');
 const bestScoreValueEl = document.getElementById('best-score-value');
+const noMovesNoticeEl = document.getElementById('no-moves-notice');
 
 const landingScreen = document.getElementById('landing-screen');
 const instructionsScreen = document.getElementById('instructions-screen');
@@ -154,6 +155,7 @@ const appState = {
 
 const BEST_SCORE_STORAGE_KEY = 'splash_best_score';
 let bestScore = readBestScore();
+let noLegalMovesLeft = false;
 
 /** @type {{tiles:TileColor[], initialTiles:TileColor[], history:GameSnapshot[]}|null} */
 let playSnapshot = null;
@@ -297,6 +299,7 @@ resetBtn?.addEventListener('click', () => {
   state.tiles = [...state.initialTiles];
   state.dragState = createEmptyDragState();
   state.history = [];
+  updateNoLegalMovesState();
   hideMoveError(true);
   render();
 });
@@ -308,6 +311,7 @@ newBoardBtn?.addEventListener('click', () => {
   state.initialTiles = [...fresh];
   state.dragState = createEmptyDragState();
   state.history = [];
+  updateNoLegalMovesState();
   hideMoveError(true);
   render();
 });
@@ -321,6 +325,7 @@ undoBtn?.addEventListener('click', () => {
 
   state.tiles = [...previous.tiles];
   state.dragState = createEmptyDragState();
+  updateNoLegalMovesState();
   hideMoveError(true);
   render();
 });
@@ -399,6 +404,7 @@ function exitDemoToGame() {
 
   restorePlaySnapshot();
   state.dragState = createEmptyDragState();
+  updateNoLegalMovesState();
   clearDemoAnimation();
   hideMoveError(true);
   render();
@@ -433,6 +439,7 @@ function enterGamePlay(options = {}) {
   }
 
   state.dragState = createEmptyDragState();
+  updateNoLegalMovesState();
   clearDemoAnimation();
   render();
 }
@@ -930,6 +937,65 @@ function applyMove(sourceIndex, targetIndex, gameState) {
   };
 }
 
+function updateNoLegalMovesState() {
+  noLegalMovesLeft = !hasAnyLegalMoves(state.tiles);
+}
+
+/**
+ * @param {TileColor[]} tiles
+ * @returns {boolean}
+ */
+function hasAnyLegalMoves(tiles) {
+  for (let sourceIndex = 0; sourceIndex < tiles.length; sourceIndex += 1) {
+    const sourceColor = tiles[sourceIndex];
+    if (!isMovable(sourceColor)) continue;
+
+    for (let targetIndex = 0; targetIndex < tiles.length; targetIndex += 1) {
+      if (targetIndex === sourceIndex) continue;
+      const targetColor = tiles[targetIndex];
+      if (!isMovable(targetColor)) continue;
+      if (!mix(sourceColor, targetColor)) continue;
+
+      if (hasColorConstrainedPath(sourceIndex, targetIndex, sourceColor, targetColor, tiles)) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+/**
+ * @param {number} sourceIndex
+ * @param {number} targetIndex
+ * @param {TileColor} sourceColor
+ * @param {TileColor} targetColor
+ * @param {TileColor[]} tiles
+ * @returns {boolean}
+ */
+function hasColorConstrainedPath(sourceIndex, targetIndex, sourceColor, targetColor, tiles) {
+  const queue = [sourceIndex];
+  const visited = new Set([sourceIndex]);
+
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (current === undefined) break;
+    if (current === targetIndex) return true;
+
+    for (const neighbor of getNeighbors(current)) {
+      if (visited.has(neighbor)) continue;
+
+      const color = tiles[neighbor];
+      if (color !== sourceColor && color !== targetColor) continue;
+
+      visited.add(neighbor);
+      queue.push(neighbor);
+    }
+  }
+
+  return false;
+}
+
 /**
  * @param {PointerEvent} event
  */
@@ -1011,6 +1077,7 @@ function onPointerUp(event) {
       });
       const updated = applyMove(sourceIndex, target, state);
       state.tiles = updated.tiles;
+      updateNoLegalMovesState();
       hideMoveError(true);
     } else {
       showMoveError(getIllegalPathColorMessage(sourceColor, firstIllegalColor, targetColor));
@@ -1392,7 +1459,17 @@ function render() {
   renderDragLayer();
   renderDemoLayer();
   updateScore();
+  renderNoMovesNotice();
   updateUndoButtonState();
+}
+
+function renderNoMovesNotice() {
+  if (!noMovesNoticeEl) return;
+  const shouldShow =
+    appState.mode === 'play' &&
+    appState.screen === 'game' &&
+    noLegalMovesLeft;
+  noMovesNoticeEl.classList.toggle('hidden', !shouldShow);
 }
 
 function renderInnerTiles() {
