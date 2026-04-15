@@ -22,6 +22,8 @@ const ANALYSIS_GRAPH_WIDTH = 420;
 const ANALYSIS_GRAPH_HEIGHT = 340;
 const ANALYSIS_GRAPH_NODE_RADIUS = 17;
 const ANALYSIS_GRAPH_PADDING = 30;
+const ANALYSIS_TRANSFER_HOP_MS = 130;
+const ANALYSIS_TRANSFER_PAUSE_MS = 45;
 
 const DEMO_INTRO_MESSAGE = 'Click through this demo to see how Splash is played.';
 const DEMO_HOP_MS = 430;
@@ -29,7 +31,7 @@ const DEMO_RETURN_MS = 340;
 const STANDARD_GAME_SUBTITLE_HTML =
   'Drag colors to create new colors. All three primary colors clear the cell.<br />You get one point for every empty cell. Try to clear the whole board. Hint: it can be done!';
 const ANALYSIS_SUBTITLE_TEXT =
-  'You can drag colors onto the empty board or populate it with random colors by clicking on New Board. The nodes on the graph represent "blobs" - areas of adjacent tiles of the same color - on the board. The numbers in each node denote how many tiles there are in that blob. Adjacent blobs are connected by arcs between the corresponding nodes. The graph automatically updates when you make a move on the board. You can move its nodes to improve legibiility.';
+  'You can drag colors onto the empty board or populate it with random colors by clicking on New Board. The nodes on the graph represent "blobs" - areas of adjacent tiles of the same color - on the board. The numbers in each node denote how many tiles there are in that blob. Adjacent blobs are connected by arcs between the corresponding nodes. The graph automatically updates when you make a move on the board. You can move its nodes to improve legibility, or drag one node onto another mixable node to auto-transfer as many safe moves as possible between those blobs.';
 
 const COLOR_HEX = {
   red: '#d94037',
@@ -110,6 +112,7 @@ const undoBtn = document.getElementById('undo-btn');
 const resetBtn = document.getElementById('reset-btn');
 const newBoardBtn = document.getElementById('new-board-btn');
 const clearBoardBtn = document.getElementById('clear-board-btn');
+const analysisMixFeedbackEl = document.getElementById('analysis-mix-feedback');
 const analysisPalette = document.getElementById('analysis-palette');
 const analysisGraphWrap = document.getElementById('analysis-graph-wrap');
 const analysisGraphSvg = document.getElementById('analysis-graph');
@@ -229,10 +232,15 @@ const analysisGraphState = {
     nodeKey: /** @type {string|null} */ (null),
     pointerId: /** @type {number|null} */ (null),
     offsetX: 0,
-    offsetY: 0
+    offsetY: 0,
+    startX: 0,
+    startY: 0
   }
 };
 const analysisCursorCache = new Map();
+const analysisTransferState = {
+  active: false
+};
 
 /** @type {DemoStep[]} */
 const DEMO_STEPS = [
@@ -380,6 +388,7 @@ analysisSwatches.forEach((swatch) => {
 
 resetBtn?.addEventListener('click', () => {
   if (appState.mode !== 'play') return;
+  if (isAnalysisTransferAnimating()) return;
   if (appState.playVariant === 'analysis') {
     if (analysisSessionState.maxTiles) {
       state.tiles = [...analysisSessionState.maxTiles];
@@ -389,6 +398,7 @@ resetBtn?.addEventListener('click', () => {
   }
   state.dragState = createEmptyDragState();
   state.history = [];
+  clearAnalysisMixFeedback();
   updateNoLegalMovesState();
   hideMoveError(true);
   render();
@@ -396,11 +406,13 @@ resetBtn?.addEventListener('click', () => {
 
 newBoardBtn?.addEventListener('click', () => {
   if (appState.mode !== 'play') return;
+  if (isAnalysisTransferAnimating()) return;
   const fresh = createShuffledBoard();
   state.tiles = fresh;
   state.initialTiles = [...fresh];
   state.dragState = createEmptyDragState();
   state.history = [];
+  clearAnalysisMixFeedback();
   if (appState.playVariant === 'analysis') {
     startAnalysisSession(fresh);
   }
@@ -411,6 +423,7 @@ newBoardBtn?.addEventListener('click', () => {
 
 clearBoardBtn?.addEventListener('click', () => {
   if (appState.mode !== 'play') return;
+  if (isAnalysisTransferAnimating()) return;
   if (appState.playVariant !== 'analysis') return;
   if (getColoredTileCount(state.tiles) === 0) return;
 
@@ -419,6 +432,7 @@ clearBoardBtn?.addEventListener('click', () => {
   });
   state.tiles = createEmptyBoard();
   state.dragState = createEmptyDragState();
+  clearAnalysisMixFeedback();
   updateNoLegalMovesState();
   hideMoveError(true);
   render();
@@ -426,6 +440,7 @@ clearBoardBtn?.addEventListener('click', () => {
 
 undoBtn?.addEventListener('click', () => {
   if (appState.mode !== 'play') return;
+  if (isAnalysisTransferAnimating()) return;
   if (state.history.length === 0) return;
 
   const previous = state.history.pop();
@@ -433,6 +448,7 @@ undoBtn?.addEventListener('click', () => {
 
   state.tiles = [...previous.tiles];
   state.dragState = createEmptyDragState();
+  clearAnalysisMixFeedback();
   updateNoLegalMovesState();
   hideMoveError(true);
   render();
@@ -442,7 +458,10 @@ landingDemoBtn?.addEventListener('click', enterDemoMode);
 instructionsDemoBtn?.addEventListener('click', enterDemoMode);
 instructionsExitBtn?.addEventListener('click', onInstructionsExit);
 demoExitBtn?.addEventListener('click', exitDemoToGame);
-playDemoBtn?.addEventListener('click', enterDemoMode);
+playDemoBtn?.addEventListener('click', () => {
+  if (isAnalysisTransferAnimating()) return;
+  enterDemoMode();
+});
 
 /** @returns {DragState} */
 function createEmptyDragState() {
@@ -459,6 +478,13 @@ function createEmptyDragState() {
     overlapRatio: 0,
     traversedColors: []
   };
+}
+
+/**
+ * @returns {boolean}
+ */
+function isAnalysisTransferAnimating() {
+  return analysisTransferState.active;
 }
 
 function enterLandingScreen() {
@@ -619,6 +645,21 @@ function setScreen(screen) {
   updatePlayVariantUi();
 }
 
+function clearAnalysisMixFeedback() {
+  if (!analysisMixFeedbackEl) return;
+  analysisMixFeedbackEl.textContent = '';
+  analysisMixFeedbackEl.classList.add('hidden');
+}
+
+/**
+ * @param {string} message
+ */
+function showAnalysisMixFeedback(message) {
+  if (!analysisMixFeedbackEl) return;
+  analysisMixFeedbackEl.textContent = message;
+  analysisMixFeedbackEl.classList.remove('hidden');
+}
+
 function updatePlayVariantUi() {
   const inGamePlayView =
     appState.mode === 'play' &&
@@ -627,6 +668,9 @@ function updatePlayVariantUi() {
   analysisPalette?.classList.toggle('hidden', !inGamePlayView);
   analysisGraphWrap?.classList.toggle('hidden', !inGamePlayView);
   clearBoardBtn?.classList.toggle('hidden', appState.playVariant !== 'analysis');
+  if (!inGamePlayView) {
+    clearAnalysisMixFeedback();
+  }
   analysisBtn?.classList.toggle('active', appState.playVariant === 'analysis');
   if (analysisBtn) {
     analysisBtn.textContent =
@@ -643,6 +687,7 @@ function updatePlayVariantUi() {
       hideMoveError(true);
     } else {
       gameSubtitleEl.innerHTML = STANDARD_GAME_SUBTITLE_HTML;
+      clearAnalysisMixFeedback();
     }
   }
 }
@@ -657,6 +702,8 @@ function onMoveErrorButtonClick() {
 
 function onAnalysisButtonClick() {
   if (appState.mode !== 'play' || appState.screen !== 'game') return;
+  if (isAnalysisTransferAnimating()) return;
+  clearAnalysisMixFeedback();
 
   const switchingToAnalysis = appState.playVariant !== 'analysis';
   appState.playVariant = switchingToAnalysis ? 'analysis' : 'standard';
@@ -685,6 +732,7 @@ function onAnalysisButtonClick() {
  * @param {PointerEvent} event
  */
 function onAnalysisSwatchPointerDown(event) {
+  if (isAnalysisTransferAnimating()) return;
   selectAnalysisSwatchFromEvent(event);
   event.preventDefault();
 }
@@ -693,6 +741,7 @@ function onAnalysisSwatchPointerDown(event) {
  * @param {MouseEvent} event
  */
 function onAnalysisSwatchClick(event) {
+  if (isAnalysisTransferAnimating()) return;
   selectAnalysisSwatchFromEvent(event);
 }
 
@@ -702,6 +751,7 @@ function onAnalysisSwatchClick(event) {
 function selectAnalysisSwatchFromEvent(event) {
   if (appState.mode !== 'play' || appState.screen !== 'game') return;
   if (appState.playVariant !== 'analysis') return;
+  if (isAnalysisTransferAnimating()) return;
 
   const target = event.currentTarget;
   if (!(target instanceof HTMLElement)) return;
@@ -1227,26 +1277,74 @@ function hasAnyLegalMoves(tiles) {
  * @returns {boolean}
  */
 function hasColorConstrainedPath(sourceIndex, targetIndex, sourceColor, targetColor, tiles) {
+  return (
+    findColorConstrainedPath(
+      sourceIndex,
+      targetIndex,
+      sourceColor,
+      targetColor,
+      tiles
+    ) !== null
+  );
+}
+
+/**
+ * @param {number} sourceIndex
+ * @param {number} targetIndex
+ * @param {TileColor} sourceColor
+ * @param {TileColor} targetColor
+ * @param {TileColor[]} tiles
+ * @returns {number[]|null}
+ */
+function findColorConstrainedPath(
+  sourceIndex,
+  targetIndex,
+  sourceColor,
+  targetColor,
+  tiles
+) {
+  if (sourceIndex === targetIndex) {
+    return [sourceIndex];
+  }
+
   const queue = [sourceIndex];
   const visited = new Set([sourceIndex]);
+  /** @type {Map<number,number>} */
+  const previous = new Map();
 
   while (queue.length > 0) {
     const current = queue.shift();
     if (current === undefined) break;
-    if (current === targetIndex) return true;
 
     for (const neighbor of getNeighbors(current)) {
       if (visited.has(neighbor)) continue;
 
+      const isTarget = neighbor === targetIndex;
       const color = tiles[neighbor];
-      if (color !== sourceColor && color !== targetColor) continue;
+      if (!isTarget && color !== sourceColor && color !== targetColor) continue;
 
       visited.add(neighbor);
+      previous.set(neighbor, current);
+
+      if (neighbor === targetIndex) {
+        /** @type {number[]} */
+        const path = [targetIndex];
+        let backtrack = targetIndex;
+        while (backtrack !== sourceIndex) {
+          const parent = previous.get(backtrack);
+          if (parent === undefined) return null;
+          path.push(parent);
+          backtrack = parent;
+        }
+        path.reverse();
+        return path;
+      }
+
       queue.push(neighbor);
     }
   }
 
-  return false;
+  return null;
 }
 
 /**
@@ -1254,6 +1352,7 @@ function hasColorConstrainedPath(sourceIndex, targetIndex, sourceColor, targetCo
  */
 function onPointerDown(event) {
   if (appState.mode !== 'play' || appState.screen !== 'game') return;
+  if (isAnalysisTransferAnimating()) return;
 
   if (isAnalysisBoardPaintArmed()) {
     beginAnalysisPaintStroke(event.pointerId);
@@ -1308,6 +1407,7 @@ function onPointerDown(event) {
  */
 function onPointerMove(event) {
   if (appState.mode !== 'play' || appState.screen !== 'game') return;
+  if (isAnalysisTransferAnimating()) return;
 
   if (
     analysisSessionState.paint.active &&
@@ -1359,6 +1459,7 @@ function onBoardPointerLeave(event) {
  */
 function onPointerUp(event) {
   if (appState.mode !== 'play' || appState.screen !== 'game') return;
+  if (isAnalysisTransferAnimating()) return;
 
   if (
     analysisSessionState.paint.active &&
@@ -1423,6 +1524,7 @@ function onPointerUp(event) {
  */
 function onGlobalPointerMove(event) {
   if (appState.mode !== 'play' || appState.screen !== 'game') return;
+  if (isAnalysisTransferAnimating()) return;
   if (state.dragState.sourceType !== 'palette') return;
 
   const point = svgPointFromClient(event.clientX, event.clientY);
@@ -1437,6 +1539,7 @@ function onGlobalPointerMove(event) {
  */
 function onGlobalPointerUp(event) {
   if (appState.mode !== 'play' || appState.screen !== 'game') return;
+  if (isAnalysisTransferAnimating()) return;
   if (state.dragState.sourceType !== 'palette') return;
   finalizePalettePlacement(event);
 }
@@ -1446,6 +1549,7 @@ function onGlobalPointerUp(event) {
  */
 function onGlobalPointerDown(event) {
   if (appState.mode !== 'play' || appState.screen !== 'game') return;
+  if (isAnalysisTransferAnimating()) return;
   if (appState.playVariant !== 'analysis') return;
   if (!analysisSessionState.selectedColor) return;
   if (isEventInsideAnalysisFillControls(event)) return;
@@ -1502,6 +1606,7 @@ function finalizePalettePlacement(event) {
  * @param {PointerEvent} _event
  */
 function onGlobalPointerCancel(_event) {
+  if (isAnalysisTransferAnimating()) return;
   if (state.dragState.sourceType !== 'palette') return;
   state.dragState = createEmptyDragState();
   render();
@@ -1509,6 +1614,7 @@ function onGlobalPointerCancel(_event) {
 
 function cancelDrag() {
   if (appState.mode !== 'play') return;
+  if (isAnalysisTransferAnimating()) return;
 
   if (analysisSessionState.paint.active) {
     endAnalysisPaintStroke(analysisSessionState.paint.pointerId);
@@ -2135,6 +2241,8 @@ function syncAnalysisGraphState(blobs, edges, tileToBlob) {
     analysisGraphState.drag.active = false;
     analysisGraphState.drag.nodeKey = null;
     analysisGraphState.drag.pointerId = null;
+    analysisGraphState.drag.startX = 0;
+    analysisGraphState.drag.startY = 0;
   }
 
   if (
@@ -2493,6 +2601,8 @@ function onGraphPointerDown(event) {
   ) {
     return;
   }
+  if (isAnalysisTransferAnimating()) return;
+  clearAnalysisMixFeedback();
   const selectionCleared = setSelectedBlobKey(null);
 
   const target = event.target;
@@ -2531,6 +2641,8 @@ function onGraphPointerDown(event) {
   analysisGraphState.drag.pointerId = event.pointerId;
   analysisGraphState.drag.offsetX = point.x - node.x;
   analysisGraphState.drag.offsetY = point.y - node.y;
+  analysisGraphState.drag.startX = node.x;
+  analysisGraphState.drag.startY = node.y;
   node.pinned = true;
 
   analysisGraphSvg.setPointerCapture(event.pointerId);
@@ -2543,6 +2655,7 @@ function onGraphPointerDown(event) {
  */
 function onGraphPointerMove(event) {
   if (!analysisGraphSvg) return;
+  if (isAnalysisTransferAnimating()) return;
   if (!analysisGraphState.drag.active) {
     if (updateSelectionFromGraphTarget(event.target)) {
       render();
@@ -2602,10 +2715,24 @@ function onGraphPointerLeave(event) {
 /**
  * @param {PointerEvent} event
  */
-function onGraphPointerUp(event) {
+async function onGraphPointerUp(event) {
   if (!analysisGraphSvg) return;
+  if (isAnalysisTransferAnimating()) return;
   if (!analysisGraphState.drag.active) return;
   if (analysisGraphState.drag.pointerId !== event.pointerId) return;
+
+  const draggedNodeKey = analysisGraphState.drag.nodeKey;
+  const dragStartX = analysisGraphState.drag.startX;
+  const dragStartY = analysisGraphState.drag.startY;
+  const draggedNode = draggedNodeKey
+    ? analysisGraphState.nodes.get(draggedNodeKey)
+    : null;
+  const dragDistance = draggedNode
+    ? Math.hypot(
+        draggedNode.x - dragStartX,
+        draggedNode.y - dragStartY
+      )
+    : 0;
 
   if (analysisGraphSvg.hasPointerCapture(event.pointerId)) {
     analysisGraphSvg.releasePointerCapture(event.pointerId);
@@ -2613,6 +2740,51 @@ function onGraphPointerUp(event) {
   analysisGraphState.drag.active = false;
   analysisGraphState.drag.nodeKey = null;
   analysisGraphState.drag.pointerId = null;
+  analysisGraphState.drag.startX = 0;
+  analysisGraphState.drag.startY = 0;
+
+  const droppedOnKey =
+    draggedNodeKey && dragDistance >= DRAG_DISTANCE_THRESHOLD
+      ? findOverlappedAnalysisNodeKey(draggedNodeKey)
+      : null;
+  if (draggedNodeKey && droppedOnKey) {
+    const droppedSourceNode = analysisGraphState.nodes.get(draggedNodeKey);
+    const droppedTargetNode = analysisGraphState.nodes.get(droppedOnKey);
+    const canLegallyMix = Boolean(
+      droppedSourceNode &&
+      droppedTargetNode &&
+      mix(droppedSourceNode.color, droppedTargetNode.color)
+    );
+
+    if (!canLegallyMix) {
+      showAnalysisMixFeedback('Move failed: those blob colors cannot legally mix.');
+      if (draggedNode) {
+        const resetPosition = clampAnalysisGraphPosition(
+          dragStartX,
+          dragStartY
+        );
+        draggedNode.x = resetPosition.x;
+        draggedNode.y = resetPosition.y;
+      }
+    } else {
+      const movedCount = await runAnalysisBlobTransfer(draggedNodeKey, droppedOnKey);
+      if (movedCount <= 0 && draggedNode) {
+        showAnalysisMixFeedback(
+          'Move failed: no safe tile transfer exists for those blobs (it would orphan a blob).'
+        );
+        const resetPosition = clampAnalysisGraphPosition(
+          dragStartX,
+          dragStartY
+        );
+        draggedNode.x = resetPosition.x;
+        draggedNode.y = resetPosition.y;
+      } else if (movedCount > 0) {
+        clearAnalysisMixFeedback();
+      }
+    }
+  }
+
+  render();
 }
 
 /**
@@ -2620,6 +2792,7 @@ function onGraphPointerUp(event) {
  */
 function onGraphPointerCancel(event) {
   if (!analysisGraphSvg) return;
+  if (isAnalysisTransferAnimating()) return;
   if (!analysisGraphState.drag.active) return;
 
   if (
@@ -2632,6 +2805,377 @@ function onGraphPointerCancel(event) {
   analysisGraphState.drag.active = false;
   analysisGraphState.drag.nodeKey = null;
   analysisGraphState.drag.pointerId = null;
+  analysisGraphState.drag.startX = 0;
+  analysisGraphState.drag.startY = 0;
+  render();
+}
+
+/**
+ * @param {string} sourceBlobKey
+ * @returns {string|null}
+ */
+function findOverlappedAnalysisNodeKey(sourceBlobKey) {
+  const sourceNode = analysisGraphState.nodes.get(sourceBlobKey);
+  if (!sourceNode) return null;
+
+  let nearestKey = null;
+  let nearestDistance = Infinity;
+  const overlapThreshold = ANALYSIS_GRAPH_NODE_RADIUS * 2 + 4;
+
+  for (const node of analysisGraphState.nodes.values()) {
+    if (node.key === sourceBlobKey) continue;
+    const distance = Math.hypot(node.x - sourceNode.x, node.y - sourceNode.y);
+    if (distance > overlapThreshold) continue;
+    if (distance < nearestDistance) {
+      nearestDistance = distance;
+      nearestKey = node.key;
+    }
+  }
+
+  return nearestKey;
+}
+
+/**
+ * @param {string} sourceBlobKey
+ * @param {string} targetBlobKey
+ * @returns {Promise<number>}
+ */
+async function runAnalysisBlobTransfer(sourceBlobKey, targetBlobKey) {
+  if (sourceBlobKey === targetBlobKey) return 0;
+  if (appState.playVariant !== 'analysis') return 0;
+  if (isAnalysisTransferAnimating()) return 0;
+
+  const sourceNode = analysisGraphState.nodes.get(sourceBlobKey);
+  const targetNode = analysisGraphState.nodes.get(targetBlobKey);
+  if (!sourceNode || !targetNode) return 0;
+
+  const mixedColor = mix(sourceNode.color, targetNode.color);
+  if (!mixedColor) return 0;
+
+  const sourceMembers = analysisGraphState.blobMembers.get(sourceBlobKey) || [];
+  const targetMembers = analysisGraphState.blobMembers.get(targetBlobKey) || [];
+  if (sourceMembers.length === 0 || targetMembers.length === 0) return 0;
+
+  const plan = buildAnalysisBlobTransferPlan(
+    state.tiles,
+    sourceMembers,
+    targetMembers,
+    sourceNode.color,
+    targetNode.color,
+    mixedColor
+  );
+  if (plan.length === 0) return 0;
+
+  let movedCount = 0;
+  let nextTiles = [...state.tiles];
+  analysisTransferState.active = true;
+
+  try {
+    for (const step of plan) {
+      const animated = await animateAnalysisBlobTransferStep(
+        step.sourceIndex,
+        sourceNode.color,
+        step.path
+      );
+      if (!animated) break;
+
+      if (movedCount === 0) {
+        state.history.push({
+          tiles: [...state.tiles]
+        });
+      }
+
+      nextTiles = applyAnalysisBlobTransferMove(
+        nextTiles,
+        step.sourceIndex,
+        step.targetIndex,
+        mixedColor
+      );
+      state.tiles = nextTiles;
+      movedCount += 1;
+      render();
+
+      const keepGoing = await waitForAnalysisTransferMs(ANALYSIS_TRANSFER_PAUSE_MS);
+      clearDemoAnimation();
+      render();
+      if (!keepGoing) break;
+    }
+  } finally {
+    clearDemoAnimation();
+    analysisTransferState.active = false;
+  }
+
+  if (movedCount > 0) {
+    setSelectedBlobKey(null);
+    hideMoveError(true);
+    updateNoLegalMovesState();
+  }
+
+  return movedCount;
+}
+
+/**
+ * @param {number} sourceIndex
+ * @param {TileColor} sourceColor
+ * @param {number[]} path
+ * @returns {Promise<boolean>}
+ */
+async function animateAnalysisBlobTransferStep(sourceIndex, sourceColor, path) {
+  if (path.length < 2) return false;
+  if (!isAnalysisTransferAnimating()) return false;
+
+  const sourcePoint = getTileCenter(sourceIndex);
+  setDemoAnimation(sourceIndex, sourceColor, sourcePoint.x, sourcePoint.y);
+  render();
+
+  let currentPoint = sourcePoint;
+  for (const tileIndex of path.slice(1)) {
+    const destination = getTileCenter(tileIndex);
+    const moved = await tweenAnalysisTransferPosition(
+      currentPoint,
+      destination,
+      ANALYSIS_TRANSFER_HOP_MS
+    );
+    if (!moved) return false;
+    currentPoint = destination;
+  }
+
+  return true;
+}
+
+/**
+ * @param {{x:number,y:number}} from
+ * @param {{x:number,y:number}} to
+ * @param {number} durationMs
+ * @returns {Promise<boolean>}
+ */
+function tweenAnalysisTransferPosition(from, to, durationMs) {
+  return new Promise((resolve) => {
+    const startedAt = performance.now();
+
+    /**
+     * @param {number} now
+     */
+    function frame(now) {
+      if (!isAnalysisTransferAnimating()) {
+        resolve(false);
+        return;
+      }
+
+      const progress = Math.min(1, (now - startedAt) / durationMs);
+      const eased = easeInOutCubic(progress);
+
+      demoAnimation.x = from.x + (to.x - from.x) * eased;
+      demoAnimation.y = from.y + (to.y - from.y) * eased;
+      render();
+
+      if (progress < 1) {
+        requestAnimationFrame(frame);
+        return;
+      }
+
+      resolve(true);
+    }
+
+    requestAnimationFrame(frame);
+  });
+}
+
+/**
+ * @param {number} ms
+ * @returns {Promise<boolean>}
+ */
+function waitForAnalysisTransferMs(ms) {
+  return new Promise((resolve) => {
+    window.setTimeout(() => {
+      resolve(isAnalysisTransferAnimating());
+    }, ms);
+  });
+}
+
+/**
+ * @param {TileColor[]} baseTiles
+ * @param {number[]} sourceMembers
+ * @param {number[]} targetMembers
+ * @param {TileColor} sourceColor
+ * @param {TileColor} targetColor
+ * @param {TileColor} mixedColor
+ * @returns {Array<{sourceIndex:number,targetIndex:number,path:number[]}>}
+ */
+function buildAnalysisBlobTransferPlan(
+  baseTiles,
+  sourceMembers,
+  targetMembers,
+  sourceColor,
+  targetColor,
+  mixedColor
+) {
+  const initialStrandedCount = countStrandedAnalysisBlobs(baseTiles);
+  /** @type {Map<string,Array<{sourceIndex:number,targetIndex:number,path:number[]}>>} */
+  const memo = new Map();
+
+  /**
+   * @param {TileColor[]} tiles
+   * @param {number[]} remainingSources
+   * @param {number[]} remainingTargets
+   * @param {number} strandedCount
+   * @returns {Array<{sourceIndex:number,targetIndex:number,path:number[]}>}
+   */
+  function dfs(tiles, remainingSources, remainingTargets, strandedCount) {
+    if (remainingSources.length === 0 || remainingTargets.length === 0) {
+      return [];
+    }
+
+    const sourceKey = remainingSources.join(',');
+    const targetKey = remainingTargets.join(',');
+    const memoKey = `${sourceKey}|${targetKey}|${strandedCount}`;
+    const cached = memo.get(memoKey);
+    if (cached) return cached;
+
+    /** @type {Array<{sourceIndex:number,targetIndex:number,path:number[]}>} */
+    let bestPlan = [];
+    const optimisticMax = Math.min(remainingSources.length, remainingTargets.length);
+
+    for (const sourceIndex of remainingSources) {
+      for (const targetIndex of remainingTargets) {
+        const path = findColorConstrainedPath(
+          sourceIndex,
+          targetIndex,
+          sourceColor,
+          targetColor,
+          tiles
+        );
+        if (!path || path.length < 2) continue;
+
+        const nextTiles = applyAnalysisBlobTransferMove(
+          tiles,
+          sourceIndex,
+          targetIndex,
+          mixedColor
+        );
+        const nextStranded = countStrandedAnalysisBlobs(nextTiles);
+        if (nextStranded > strandedCount) continue;
+
+        const nextSources = remainingSources.filter((index) => index !== sourceIndex);
+        const nextTargets = remainingTargets.filter((index) => index !== targetIndex);
+        const suffix = dfs(nextTiles, nextSources, nextTargets, nextStranded);
+        const candidate = [{ sourceIndex, targetIndex, path }, ...suffix];
+
+        if (
+          candidate.length > bestPlan.length ||
+          (candidate.length === bestPlan.length &&
+            isLexicographicallySmallerTransferPlan(candidate, bestPlan))
+        ) {
+          bestPlan = candidate;
+        }
+
+        if (bestPlan.length >= optimisticMax) {
+          memo.set(memoKey, bestPlan);
+          return bestPlan;
+        }
+      }
+    }
+
+    memo.set(memoKey, bestPlan);
+    return bestPlan;
+  }
+
+  const normalizedSources = sourceMembers.filter(
+    (index) => baseTiles[index] === sourceColor
+  );
+  const normalizedTargets = targetMembers.filter(
+    (index) => baseTiles[index] === targetColor
+  );
+
+  return dfs(
+    [...baseTiles],
+    normalizedSources,
+    normalizedTargets,
+    initialStrandedCount
+  );
+}
+
+/**
+ * @param {Array<{sourceIndex:number,targetIndex:number,path:number[]}>} a
+ * @param {Array<{sourceIndex:number,targetIndex:number,path:number[]}>} b
+ * @returns {boolean}
+ */
+function isLexicographicallySmallerTransferPlan(a, b) {
+  const length = Math.min(a.length, b.length);
+  for (let i = 0; i < length; i += 1) {
+    const sourceDiff = a[i].sourceIndex - b[i].sourceIndex;
+    if (sourceDiff !== 0) return sourceDiff < 0;
+    const targetDiff = a[i].targetIndex - b[i].targetIndex;
+    if (targetDiff !== 0) return targetDiff < 0;
+  }
+  return a.length < b.length;
+}
+
+/**
+ * @param {TileColor[]} tiles
+ * @param {number} sourceIndex
+ * @param {number} targetIndex
+ * @param {TileColor} mixedColor
+ * @returns {TileColor[]}
+ */
+function applyAnalysisBlobTransferMove(
+  tiles,
+  sourceIndex,
+  targetIndex,
+  mixedColor
+) {
+  const nextTiles = [...tiles];
+  nextTiles[sourceIndex] = 'white';
+  nextTiles[targetIndex] = mixedColor;
+  return nextTiles;
+}
+
+/**
+ * @param {TileColor[]} tiles
+ * @returns {number}
+ */
+function countStrandedAnalysisBlobs(tiles) {
+  const graphData = buildBlobGraphData(tiles);
+  if (graphData.blobs.length === 0) return 0;
+
+  const colorByBlobKey = new Map(
+    graphData.blobs.map((blob) => [blob.key, blob.color])
+  );
+  /** @type {Map<string,Set<TileColor>>} */
+  const adjacentColorsByBlobKey = new Map(
+    graphData.blobs.map((blob) => [blob.key, new Set()])
+  );
+
+  for (const [aKey, bKey] of graphData.edges) {
+    const aColor = colorByBlobKey.get(aKey);
+    const bColor = colorByBlobKey.get(bKey);
+    if (aColor) {
+      adjacentColorsByBlobKey.get(bKey)?.add(aColor);
+    }
+    if (bColor) {
+      adjacentColorsByBlobKey.get(aKey)?.add(bColor);
+    }
+  }
+
+  let strandedCount = 0;
+  for (const blob of graphData.blobs) {
+    const adjacentColors = adjacentColorsByBlobKey.get(blob.key);
+    let hasLegalNeighbor = false;
+    if (adjacentColors) {
+      for (const neighborColor of adjacentColors) {
+        if (mix(blob.color, neighborColor)) {
+          hasLegalNeighbor = true;
+          break;
+        }
+      }
+    }
+
+    if (!hasLegalNeighbor) {
+      strandedCount += 1;
+    }
+  }
+
+  return strandedCount;
 }
 
 function renderAnalysisStatus() {
@@ -3094,7 +3638,10 @@ function updateBestScore(score) {
 function updateUndoButtonState() {
   if (!undoBtn) return;
 
-  const enabled = appState.mode === 'play' && state.history.length > 0;
+  const enabled =
+    appState.mode === 'play' &&
+    state.history.length > 0 &&
+    !isAnalysisTransferAnimating();
   undoBtn.disabled = !enabled;
 }
 
@@ -3106,7 +3653,8 @@ function updateClearBoardButtonState() {
     appState.screen === 'game' &&
     appState.playVariant === 'analysis';
   const hasFilledTiles = getColoredTileCount(state.tiles) > 0;
-  clearBoardBtn.disabled = !analysisActive || !hasFilledTiles;
+  clearBoardBtn.disabled =
+    !analysisActive || !hasFilledTiles || isAnalysisTransferAnimating();
 }
 
 /** @returns {{x:number,y:number}[]} */

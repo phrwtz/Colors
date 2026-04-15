@@ -276,6 +276,15 @@ body {
   background: #ffe2b6;
 }
 
+.analysis-mix-feedback {
+  margin: 0;
+  align-self: center;
+  color: #8d2a22;
+  font-size: 0.95rem;
+  font-weight: 700;
+  line-height: 1.25;
+}
+
 .no-moves-notice {
   margin: 0.1rem 0 0.75rem;
   color: #c32020;
