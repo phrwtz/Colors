@@ -54,7 +54,7 @@
                 <p class="score-pill">Score: <span id="score-value">0</span></p>
                 <p class="score-pill">Best: <span id="best-score-value">No score yet</span></p>
               </div>
-              <p class="subtitle">Drag colors to create new colors. All three primary colors clear the cell.<br />You get one point for every empty cell. Try to clear the whole board. Hint: it can be done!</p>
+              <p id="game-subtitle" class="subtitle">Drag colors to create new colors. All three primary colors clear the cell.<br />You get one point for every empty cell. Try to clear the whole board. Hint: it can be done!</p>
             </div>
             <div class="topbar-actions">
               <section
@@ -76,17 +76,37 @@
 
           <section class="controls" aria-label="Game controls">
             <button id="play-demo-btn" type="button">Watch Demo</button>
+            <button id="analysis-btn" type="button">Analysis</button>
             <button id="undo-btn" type="button">Undo</button>
             <button id="reset-btn" type="button">Reset</button>
             <button id="new-board-btn" type="button">New Board</button>
+            <button id="clear-board-btn" class="hidden" type="button">Clear Board</button>
           </section>
           <p id="no-moves-notice" class="no-moves-notice hidden" role="status" aria-live="polite">
             There are no legal moves left!
           </p>
 
-          <section class="board-wrap" aria-label="Colors board">
-            <svg id="board" role="img" aria-label="Hex board"></svg>
-          </section>
+          <div class="board-layout">
+            <aside id="analysis-palette" class="analysis-palette hidden" aria-label="Analysis palette">
+              <button class="analysis-swatch red" data-color="red" type="button" aria-label="Place red tile">
+                <span class="analysis-swatch-count">0</span>
+              </button>
+              <button class="analysis-swatch blue" data-color="blue" type="button" aria-label="Place blue tile">
+                <span class="analysis-swatch-count">0</span>
+              </button>
+              <button class="analysis-swatch yellow" data-color="yellow" type="button" aria-label="Place yellow tile">
+                <span class="analysis-swatch-count">0</span>
+              </button>
+            </aside>
+
+            <section class="board-wrap" aria-label="Colors board">
+              <svg id="board" role="img" aria-label="Hex board"></svg>
+            </section>
+
+            <section id="analysis-graph-wrap" class="analysis-graph-wrap hidden" aria-label="Blob graph">
+              <svg id="analysis-graph" role="img" aria-label="Blob graph"></svg>
+            </section>
+          </div>
         </div>
       </section>
     </main>

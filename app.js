@@ -1,6 +1,7 @@
 /** @typedef {'red'|'blue'|'yellow'|'purple'|'green'|'orange'|'white'} TileColor */
 /** @typedef {'landing'|'instructions'|'game'} ScreenName */
 /** @typedef {'play'|'demo'} PlayMode */
+/** @typedef {'standard'|'analysis'} PlayVariant */
 /** @typedef {'mix'|'white-pair'|'none'} DemoResolution */
 
 const ROW_LENGTHS = [8, 7, 8, 7, 8, 7, 8, 7];
@@ -17,10 +18,18 @@ const DRAG_SELECTION_THRESHOLD = 0.6;
 const PATH_COLOR_OVERLAP_THRESHOLD = 0.2001;
 const DROP_CONTAINMENT_THRESHOLD = 0.6;
 const DRAG_DISTANCE_THRESHOLD = 6;
+const ANALYSIS_GRAPH_WIDTH = 420;
+const ANALYSIS_GRAPH_HEIGHT = 340;
+const ANALYSIS_GRAPH_NODE_RADIUS = 17;
+const ANALYSIS_GRAPH_PADDING = 30;
 
 const DEMO_INTRO_MESSAGE = 'Click through this demo to see how Splash is played.';
 const DEMO_HOP_MS = 430;
 const DEMO_RETURN_MS = 340;
+const STANDARD_GAME_SUBTITLE_HTML =
+  'Drag colors to create new colors. All three primary colors clear the cell.<br />You get one point for every empty cell. Try to clear the whole board. Hint: it can be done!';
+const ANALYSIS_SUBTITLE_TEXT =
+  'You can drag colors onto the empty board or populate it with random colors by clicking on New Board. The nodes on the graph represent "blobs" - areas of adjacent tiles of the same color - on the board. The numbers in each node denote how many tiles there are in that blob. Adjacent blobs are connected by arcs between the corresponding nodes. The graph automatically updates when you make a move on the board. You can move its nodes to improve legibiility.';
 
 const COLOR_HEX = {
   red: '#d94037',
@@ -56,6 +65,7 @@ const COMPONENT_KEY_TO_COLOR = {
 
 /**
  * @typedef {Object} DragState
+ * @property {'board'|'palette'|null} sourceType
  * @property {number|null} sourceIndex
  * @property {TileColor|null} sourceColor
  * @property {number} startPointerX
@@ -95,9 +105,16 @@ const COMPONENT_KEY_TO_COLOR = {
 const boardSvg = document.getElementById('board');
 const landingBoardSvg = document.getElementById('landing-board');
 const playDemoBtn = document.getElementById('play-demo-btn');
+const analysisBtn = document.getElementById('analysis-btn');
 const undoBtn = document.getElementById('undo-btn');
 const resetBtn = document.getElementById('reset-btn');
 const newBoardBtn = document.getElementById('new-board-btn');
+const clearBoardBtn = document.getElementById('clear-board-btn');
+const analysisPalette = document.getElementById('analysis-palette');
+const analysisGraphWrap = document.getElementById('analysis-graph-wrap');
+const analysisGraphSvg = document.getElementById('analysis-graph');
+const gameBoardWrap = document.querySelector('#game-screen .board-layout .board-wrap');
+const analysisSwatches = Array.from(document.querySelectorAll('.analysis-swatch'));
 
 const moveErrorModal = document.getElementById('move-error-modal');
 const moveErrorText = document.getElementById('move-error-text');
@@ -106,6 +123,7 @@ const moveErrorActions = moveErrorModal?.querySelector('.move-error-actions');
 const scoreValueEl = document.getElementById('score-value');
 const bestScoreValueEl = document.getElementById('best-score-value');
 const noMovesNoticeEl = document.getElementById('no-moves-notice');
+const gameSubtitleEl = document.getElementById('game-subtitle');
 
 const landingScreen = document.getElementById('landing-screen');
 const instructionsScreen = document.getElementById('instructions-screen');
@@ -124,6 +142,10 @@ const boardPixelWidth = BOARD_PADDING * 2 + HEX_WIDTH * 8.5;
 const boardPixelHeight = BOARD_PADDING * 2 + HEX_RADIUS * 2 + ROW_SPACING * (ROW_LENGTHS.length - 1);
 boardSvg?.setAttribute('viewBox', `0 0 ${boardPixelWidth} ${boardPixelHeight}`);
 landingBoardSvg?.setAttribute('viewBox', `0 0 ${boardPixelWidth} ${boardPixelHeight}`);
+analysisGraphSvg?.setAttribute('viewBox', `0 0 ${ANALYSIS_GRAPH_WIDTH} ${ANALYSIS_GRAPH_HEIGHT}`);
+analysisGraphSvg?.setAttribute('width', String(ANALYSIS_GRAPH_WIDTH));
+analysisGraphSvg?.setAttribute('height', String(ANALYSIS_GRAPH_HEIGHT));
+analysisGraphSvg?.setAttribute('preserveAspectRatio', 'xMidYMid meet');
 
 const outerLayer = createSvgEl('g', { id: 'outer-layer' });
 const innerLayer = createSvgEl('g', { id: 'inner-layer' });
@@ -149,14 +171,30 @@ const appState = {
   /** @type {ScreenName} */
   screen: 'game',
   /** @type {PlayMode} */
-  mode: 'play'
+  mode: 'play',
+  /** @type {PlayVariant} */
+  playVariant: 'standard'
 };
 
 const BEST_SCORE_STORAGE_KEY = 'splash_best_score';
 let bestScore = readBestScore();
 let noLegalMovesLeft = false;
 
-/** @type {{tiles:TileColor[], initialTiles:TileColor[], history:GameSnapshot[]}|null} */
+const analysisSessionState = {
+  /** @type {TileColor[]|null} */
+  maxTiles: null,
+  maxColoredCount: -1,
+  /** @type {TileColor|null} */
+  selectedColor: null,
+  paint: {
+    active: false,
+    pointerId: /** @type {number|null} */ (null),
+    didPaint: false,
+    lastTileIndex: /** @type {number|null} */ (null)
+  }
+};
+
+/** @type {{tiles:TileColor[], initialTiles:TileColor[], history:GameSnapshot[], playVariant:PlayVariant}|null} */
 let playSnapshot = null;
 
 const demoState = {
@@ -174,6 +212,27 @@ const demoAnimation = {
   x: 0,
   y: 0
 };
+
+const analysisGraphState = {
+  /** @type {Map<string,{key:string,color:TileColor,x:number,y:number,pinned:boolean,label:string}>} */
+  nodes: new Map(),
+  /** @type {Array<[string,string]>} */
+  edges: [],
+  /** @type {Map<string,number[]>} */
+  blobMembers: new Map(),
+  /** @type {string[]} */
+  tileToBlob: Array.from({ length: tilesMeta.length }, () => ''),
+  selectedBlobKey: /** @type {string|null} */ (null),
+  lastSignature: '',
+  drag: {
+    active: false,
+    nodeKey: /** @type {string|null} */ (null),
+    pointerId: /** @type {number|null} */ (null),
+    offsetX: 0,
+    offsetY: 0
+  }
+};
+const analysisCursorCache = new Map();
 
 /** @type {DemoStep[]} */
 const DEMO_STEPS = [
@@ -299,12 +358,35 @@ boardSvg.addEventListener('pointermove', onPointerMove);
 boardSvg.addEventListener('pointerup', onPointerUp);
 boardSvg.addEventListener('pointercancel', cancelDrag);
 boardSvg.addEventListener('lostpointercapture', cancelDrag);
+boardSvg.addEventListener('pointerleave', onBoardPointerLeave);
+analysisGraphSvg?.addEventListener('pointerdown', onGraphPointerDown);
+analysisGraphSvg?.addEventListener('pointermove', onGraphPointerMove);
+analysisGraphSvg?.addEventListener('pointerup', onGraphPointerUp);
+analysisGraphSvg?.addEventListener('pointercancel', onGraphPointerCancel);
+analysisGraphSvg?.addEventListener('lostpointercapture', onGraphPointerCancel);
+analysisGraphSvg?.addEventListener('pointerleave', onGraphPointerLeave);
+window.addEventListener('pointermove', onGlobalPointerMove);
+window.addEventListener('pointerup', onGlobalPointerUp);
+window.addEventListener('pointercancel', onGlobalPointerCancel);
+window.addEventListener('pointerdown', onGlobalPointerDown);
+window.addEventListener('resize', syncAnalysisGraphWrapHeight);
 
 moveErrorOkBtn?.addEventListener('click', onMoveErrorButtonClick);
+analysisBtn?.addEventListener('click', onAnalysisButtonClick);
+analysisSwatches.forEach((swatch) => {
+  swatch.addEventListener('pointerdown', onAnalysisSwatchPointerDown);
+  swatch.addEventListener('click', onAnalysisSwatchClick);
+});
 
 resetBtn?.addEventListener('click', () => {
   if (appState.mode !== 'play') return;
-  state.tiles = [...state.initialTiles];
+  if (appState.playVariant === 'analysis') {
+    if (analysisSessionState.maxTiles) {
+      state.tiles = [...analysisSessionState.maxTiles];
+    }
+  } else {
+    state.tiles = [...state.initialTiles];
+  }
   state.dragState = createEmptyDragState();
   state.history = [];
   updateNoLegalMovesState();
@@ -315,10 +397,28 @@ resetBtn?.addEventListener('click', () => {
 newBoardBtn?.addEventListener('click', () => {
   if (appState.mode !== 'play') return;
   const fresh = createShuffledBoard();
-  state.tiles = [...fresh];
+  state.tiles = fresh;
   state.initialTiles = [...fresh];
   state.dragState = createEmptyDragState();
   state.history = [];
+  if (appState.playVariant === 'analysis') {
+    startAnalysisSession(fresh);
+  }
+  updateNoLegalMovesState();
+  hideMoveError(true);
+  render();
+});
+
+clearBoardBtn?.addEventListener('click', () => {
+  if (appState.mode !== 'play') return;
+  if (appState.playVariant !== 'analysis') return;
+  if (getColoredTileCount(state.tiles) === 0) return;
+
+  state.history.push({
+    tiles: [...state.tiles]
+  });
+  state.tiles = createEmptyBoard();
+  state.dragState = createEmptyDragState();
   updateNoLegalMovesState();
   hideMoveError(true);
   render();
@@ -347,6 +447,7 @@ playDemoBtn?.addEventListener('click', enterDemoMode);
 /** @returns {DragState} */
 function createEmptyDragState() {
   return {
+    sourceType: null,
     sourceIndex: null,
     sourceColor: null,
     startPointerX: 0,
@@ -386,7 +487,8 @@ function capturePlaySnapshot() {
   playSnapshot = {
     tiles: [...state.tiles],
     initialTiles: [...state.initialTiles],
-    history: state.history.map((snapshot) => ({ tiles: [...snapshot.tiles] }))
+    history: state.history.map((snapshot) => ({ tiles: [...snapshot.tiles] })),
+    playVariant: appState.playVariant
   };
 }
 
@@ -395,6 +497,8 @@ function restorePlaySnapshot() {
   state.tiles = [...playSnapshot.tiles];
   state.initialTiles = [...playSnapshot.initialTiles];
   state.history = playSnapshot.history.map((snapshot) => ({ tiles: [...snapshot.tiles] }));
+  appState.playVariant = playSnapshot.playVariant || 'standard';
+  updatePlayVariantUi();
 }
 
 function exitDemoToGame() {
@@ -440,13 +544,23 @@ function enterGamePlay(options = {}) {
   hideMoveError(true);
 
   if (freshBoard) {
-    const fresh = createShuffledBoard();
-    state.tiles = [...fresh];
+    const fresh =
+      appState.playVariant === 'analysis'
+        ? createEmptyBoard()
+        : createShuffledBoard();
+    state.tiles = fresh;
     state.initialTiles = [...fresh];
     state.history = [];
+
+    if (appState.playVariant === 'analysis') {
+      startAnalysisSession(fresh);
+    } else {
+      clearAnalysisSession();
+    }
   }
 
   state.dragState = createEmptyDragState();
+  updatePlayVariantUi();
   updateNoLegalMovesState();
   clearDemoAnimation();
   render();
@@ -502,6 +616,35 @@ function setScreen(screen) {
   landingScreen?.classList.toggle('hidden', screen !== 'landing');
   instructionsScreen?.classList.toggle('hidden', screen !== 'instructions');
   gameScreen?.classList.toggle('hidden', screen !== 'game');
+  updatePlayVariantUi();
+}
+
+function updatePlayVariantUi() {
+  const inGamePlayView =
+    appState.mode === 'play' &&
+    appState.screen === 'game' &&
+    appState.playVariant === 'analysis';
+  analysisPalette?.classList.toggle('hidden', !inGamePlayView);
+  analysisGraphWrap?.classList.toggle('hidden', !inGamePlayView);
+  clearBoardBtn?.classList.toggle('hidden', appState.playVariant !== 'analysis');
+  analysisBtn?.classList.toggle('active', appState.playVariant === 'analysis');
+  if (analysisBtn) {
+    analysisBtn.textContent =
+      appState.playVariant === 'analysis'
+        ? 'Play the game'
+        : 'Analysis';
+  }
+  gameScreen?.classList.toggle('analysis-mode', appState.playVariant === 'analysis');
+  updateAnalysisPaintCursor();
+  syncAnalysisGraphWrapHeight();
+  if (gameSubtitleEl) {
+    if (appState.playVariant === 'analysis') {
+      gameSubtitleEl.textContent = ANALYSIS_SUBTITLE_TEXT;
+      hideMoveError(true);
+    } else {
+      gameSubtitleEl.innerHTML = STANDARD_GAME_SUBTITLE_HTML;
+    }
+  }
 }
 
 function onMoveErrorButtonClick() {
@@ -510,6 +653,75 @@ function onMoveErrorButtonClick() {
     return;
   }
   hideMoveError();
+}
+
+function onAnalysisButtonClick() {
+  if (appState.mode !== 'play' || appState.screen !== 'game') return;
+
+  const switchingToAnalysis = appState.playVariant !== 'analysis';
+  appState.playVariant = switchingToAnalysis ? 'analysis' : 'standard';
+  updatePlayVariantUi();
+
+  const fresh = createEmptyBoard();
+  state.tiles = fresh;
+  state.initialTiles = [...fresh];
+  state.history = [];
+  state.dragState = createEmptyDragState();
+
+  if (switchingToAnalysis) {
+    startAnalysisSession(fresh);
+  } else {
+    clearAnalysisSession();
+  }
+  analysisSessionState.selectedColor = null;
+  resetAnalysisPaintState();
+
+  hideMoveError(true);
+  updateNoLegalMovesState();
+  render();
+}
+
+/**
+ * @param {PointerEvent} event
+ */
+function onAnalysisSwatchPointerDown(event) {
+  selectAnalysisSwatchFromEvent(event);
+  event.preventDefault();
+}
+
+/**
+ * @param {MouseEvent} event
+ */
+function onAnalysisSwatchClick(event) {
+  selectAnalysisSwatchFromEvent(event);
+}
+
+/**
+ * @param {Event} event
+ */
+function selectAnalysisSwatchFromEvent(event) {
+  if (appState.mode !== 'play' || appState.screen !== 'game') return;
+  if (appState.playVariant !== 'analysis') return;
+
+  const target = event.currentTarget;
+  if (!(target instanceof HTMLElement)) return;
+
+  const color = target.dataset.color;
+  if (!color || !isPrimary(/** @type {TileColor} */ (color))) return;
+  const counts = getAnalysisPrimaryCounts();
+  if ((color === 'red' || color === 'blue' || color === 'yellow') && counts[color] >= 20) {
+    return;
+  }
+  analysisSessionState.selectedColor = /** @type {TileColor} */ (color);
+  resetAnalysisPaintState();
+  hideMoveError(true);
+  render();
+  if (typeof event.preventDefault === 'function') {
+    event.preventDefault();
+  }
+  if (typeof event.stopPropagation === 'function') {
+    event.stopPropagation();
+  }
 }
 
 async function advanceDemoStep() {
@@ -757,6 +969,41 @@ function createShuffledBoard() {
   }
   shuffleInPlace(colors);
   return colors;
+}
+
+/** @returns {TileColor[]} */
+function createEmptyBoard() {
+  return Array.from({ length: tilesMeta.length }, () => 'white');
+}
+
+/**
+ * @param {TileColor[]} tiles
+ * @returns {number}
+ */
+function getColoredTileCount(tiles) {
+  return tiles.reduce((acc, tile) => (tile === 'white' ? acc : acc + 1), 0);
+}
+
+/**
+ * @param {TileColor[]} tiles
+ */
+function startAnalysisSession(tiles) {
+  analysisSessionState.maxTiles = [...tiles];
+  analysisSessionState.maxColoredCount = getColoredTileCount(tiles);
+}
+
+function clearAnalysisSession() {
+  analysisSessionState.maxTiles = null;
+  analysisSessionState.maxColoredCount = -1;
+}
+
+function maybeCaptureAnalysisMaxState() {
+  if (appState.playVariant !== 'analysis') return;
+  const coloredCount = getColoredTileCount(state.tiles);
+  if (coloredCount > analysisSessionState.maxColoredCount) {
+    analysisSessionState.maxColoredCount = coloredCount;
+    analysisSessionState.maxTiles = [...state.tiles];
+  }
 }
 
 /** @returns {TileColor[]} */
@@ -1008,17 +1255,42 @@ function hasColorConstrainedPath(sourceIndex, targetIndex, sourceColor, targetCo
 function onPointerDown(event) {
   if (appState.mode !== 'play' || appState.screen !== 'game') return;
 
+  if (isAnalysisBoardPaintArmed()) {
+    beginAnalysisPaintStroke(event.pointerId);
+    const paintTileIndex = getBoardTileIndexFromPointerEvent(event);
+    const painted = paintTileIndex !== null && paintAnalysisTile(paintTileIndex);
+    if (painted || isAnalysisSelectionActive()) {
+      render();
+    }
+    boardSvg.setPointerCapture(event.pointerId);
+    event.preventDefault();
+    return;
+  }
+
+  const selectionCleared = isAnalysisSelectionActive() && setSelectedBlobKey(null);
+
   const sourceIndex = readIndexFromEvent(event);
-  if (sourceIndex === null) return;
+  if (sourceIndex === null) {
+    if (selectionCleared) {
+      render();
+    }
+    return;
+  }
 
   const color = state.tiles[sourceIndex];
-  if (!isMovable(color)) return;
+  if (!isMovable(color)) {
+    if (selectionCleared) {
+      render();
+    }
+    return;
+  }
 
   hideMoveError(true);
 
   const point = svgPointFromClient(event.clientX, event.clientY);
   state.dragState = {
     ...createEmptyDragState(),
+    sourceType: 'board',
     sourceIndex,
     sourceColor: color,
     startPointerX: point.x,
@@ -1036,7 +1308,31 @@ function onPointerDown(event) {
  */
 function onPointerMove(event) {
   if (appState.mode !== 'play' || appState.screen !== 'game') return;
-  if (state.dragState.sourceIndex === null) return;
+
+  if (
+    analysisSessionState.paint.active &&
+    analysisSessionState.paint.pointerId === event.pointerId
+  ) {
+    const tileIndex = getBoardTileIndexFromPointerEvent(event);
+    const painted = tileIndex !== null && paintAnalysisTile(tileIndex);
+    if (painted) {
+      render();
+    }
+    return;
+  }
+
+  const draggingBoardTile =
+    state.dragState.sourceType === 'board' && state.dragState.sourceIndex !== null;
+  const selectionChanged = draggingBoardTile
+    ? false
+    : updateSelectionFromBoardTarget(event.target);
+
+  if (!draggingBoardTile) {
+    if (selectionChanged) {
+      render();
+    }
+    return;
+  }
 
   const point = svgPointFromClient(event.clientX, event.clientY);
   state.dragState.pointerX = point.x;
@@ -1050,8 +1346,30 @@ function onPointerMove(event) {
 /**
  * @param {PointerEvent} event
  */
+function onBoardPointerLeave(event) {
+  if (!isAnalysisSelectionActive()) return;
+
+  if (setSelectedBlobKey(null)) {
+    render();
+  }
+}
+
+/**
+ * @param {PointerEvent} event
+ */
 function onPointerUp(event) {
   if (appState.mode !== 'play' || appState.screen !== 'game') return;
+
+  if (
+    analysisSessionState.paint.active &&
+    analysisSessionState.paint.pointerId === event.pointerId
+  ) {
+    endAnalysisPaintStroke(event.pointerId);
+    render();
+    return;
+  }
+
+  if (state.dragState.sourceType !== 'board') return;
   if (state.dragState.sourceIndex === null) return;
 
   const point = svgPointFromClient(event.clientX, event.clientY);
@@ -1100,14 +1418,115 @@ function onPointerUp(event) {
   render();
 }
 
+/**
+ * @param {PointerEvent} event
+ */
+function onGlobalPointerMove(event) {
+  if (appState.mode !== 'play' || appState.screen !== 'game') return;
+  if (state.dragState.sourceType !== 'palette') return;
+
+  const point = svgPointFromClient(event.clientX, event.clientY);
+  state.dragState.pointerX = point.x;
+  state.dragState.pointerY = point.y;
+  updateHoverTarget();
+  render();
+}
+
+/**
+ * @param {PointerEvent} event
+ */
+function onGlobalPointerUp(event) {
+  if (appState.mode !== 'play' || appState.screen !== 'game') return;
+  if (state.dragState.sourceType !== 'palette') return;
+  finalizePalettePlacement(event);
+}
+
+/**
+ * @param {PointerEvent} event
+ */
+function onGlobalPointerDown(event) {
+  if (appState.mode !== 'play' || appState.screen !== 'game') return;
+  if (appState.playVariant !== 'analysis') return;
+  if (!analysisSessionState.selectedColor) return;
+  if (isEventInsideAnalysisFillControls(event)) return;
+
+  analysisSessionState.selectedColor = null;
+  resetAnalysisPaintState();
+  render();
+}
+
+/**
+ * @param {PointerEvent} event
+ */
+function finalizePalettePlacement(event) {
+  if (state.dragState.sourceType !== 'palette') return;
+  const sourceColor = state.dragState.sourceColor;
+  if (sourceColor === null) {
+    state.dragState = createEmptyDragState();
+    render();
+    return;
+  }
+
+  const point = svgPointFromClient(event.clientX, event.clientY);
+  state.dragState.pointerX = point.x;
+  state.dragState.pointerY = point.y;
+  updateHoverTarget();
+
+  const target = state.dragState.hoverTarget;
+  const containment = state.dragState.containmentRatio;
+  const canPlace =
+    typeof target === 'number' &&
+    state.tiles[target] === 'white' &&
+    containment >= DROP_CONTAINMENT_THRESHOLD;
+
+  if (canPlace) {
+    state.history.push({
+      tiles: [...state.tiles]
+    });
+    state.tiles[target] = sourceColor;
+    hideMoveError(true);
+    updateNoLegalMovesState();
+  } else if (pointerMovedEnough()) {
+    if (typeof target === 'number' && state.tiles[target] !== 'white') {
+      showMoveError('You can only place analysis tiles on an empty space.');
+    } else {
+      showMoveError('You tried to drop a tile outside the target zone. Try again.');
+    }
+  }
+
+  state.dragState = createEmptyDragState();
+  render();
+}
+
+/**
+ * @param {PointerEvent} _event
+ */
+function onGlobalPointerCancel(_event) {
+  if (state.dragState.sourceType !== 'palette') return;
+  state.dragState = createEmptyDragState();
+  render();
+}
+
 function cancelDrag() {
   if (appState.mode !== 'play') return;
+
+  if (analysisSessionState.paint.active) {
+    endAnalysisPaintStroke(analysisSessionState.paint.pointerId);
+    render();
+    return;
+  }
+
   if (state.dragState.sourceIndex === null) return;
   state.dragState = createEmptyDragState();
   render();
 }
 
 function updateHoverTarget() {
+  if (state.dragState.sourceType === 'palette') {
+    updateHoverTargetForPalette();
+    return;
+  }
+
   const sourceIndex = state.dragState.sourceIndex;
   if (sourceIndex === null || state.dragState.sourceColor === null) {
     state.dragState.hoverTarget = null;
@@ -1149,7 +1568,48 @@ function updateHoverTarget() {
   state.dragState.overlapRatio = bestOverlap;
 }
 
+function updateHoverTargetForPalette() {
+  if (state.dragState.sourceColor === null) {
+    state.dragState.hoverTarget = null;
+    state.dragState.containmentRatio = 0;
+    state.dragState.overlapRatio = 0;
+    return;
+  }
+
+  const draggedPoly = getDraggedInnerPolygon();
+  const draggedArea = Math.abs(polygonArea(draggedPoly));
+  if (draggedArea <= 0) {
+    state.dragState.hoverTarget = null;
+    state.dragState.containmentRatio = 0;
+    state.dragState.overlapRatio = 0;
+    return;
+  }
+
+  let bestTarget = null;
+  let bestContainment = 0;
+  let bestOverlap = 0;
+
+  for (const tile of tilesMeta) {
+    const idx = tile.index;
+    if (state.tiles[idx] !== 'white') continue;
+
+    const overlap = getOverlapForIndex(draggedPoly, draggedArea, idx);
+    if (!overlap) continue;
+
+    if (overlap.containment > bestContainment) {
+      bestContainment = overlap.containment;
+      bestOverlap = overlap.targetCoverage;
+      bestTarget = idx;
+    }
+  }
+
+  state.dragState.hoverTarget = bestTarget;
+  state.dragState.containmentRatio = bestContainment;
+  state.dragState.overlapRatio = bestOverlap;
+}
+
 function trackDragPath() {
+  if (state.dragState.sourceType !== 'board') return;
   const sourceIndex = state.dragState.sourceIndex;
   if (sourceIndex === null) return;
 
@@ -1367,6 +1827,7 @@ function pointerMovedEnough() {
  */
 function showMoveError(message) {
   if (appState.mode !== 'play') return;
+  if (appState.playVariant === 'analysis') return;
   showMoveMessage(message, 'OK', false);
 }
 
@@ -1460,22 +1921,1040 @@ function renderLandingBoard() {
 }
 
 function render() {
+  syncAnalysisGraphWrapHeight();
+  renderAnalysisGraph();
+  maybeCaptureAnalysisMaxState();
   renderInnerTiles();
   renderPreview();
   renderDragLayer();
   renderDemoLayer();
   updateScore();
+  renderAnalysisStatus();
   renderNoMovesNotice();
   updateUndoButtonState();
+  updateClearBoardButtonState();
+}
+
+function syncAnalysisGraphWrapHeight() {
+  if (!analysisGraphWrap || !gameBoardWrap) return;
+
+  const analysisActive =
+    appState.mode === 'play' &&
+    appState.screen === 'game' &&
+    appState.playVariant === 'analysis';
+
+  if (!analysisActive) {
+    analysisGraphWrap.style.height = '';
+    return;
+  }
+
+  const boardRect = gameBoardWrap.getBoundingClientRect();
+  if (boardRect.height <= 0) return;
+  analysisGraphWrap.style.height = `${Math.round(boardRect.height)}px`;
+}
+
+function renderAnalysisGraph() {
+  if (!analysisGraphSvg) return;
+
+  const analysisActive =
+    appState.mode === 'play' &&
+    appState.screen === 'game' &&
+    appState.playVariant === 'analysis';
+
+  if (!analysisActive) {
+    analysisGraphSvg.innerHTML = '';
+    analysisGraphState.lastSignature = '';
+    analysisGraphState.selectedBlobKey = null;
+    analysisGraphState.tileToBlob = Array.from({ length: tilesMeta.length }, () => '');
+    analysisGraphState.blobMembers.clear();
+    return;
+  }
+
+  const boardSignature = state.tiles.join(',');
+  if (analysisGraphState.drag.active) {
+    drawAnalysisGraph();
+    return;
+  }
+
+  if (analysisGraphState.lastSignature !== boardSignature) {
+    const graphData = buildBlobGraphData(state.tiles);
+    syncAnalysisGraphState(graphData.blobs, graphData.edges, graphData.tileToBlob);
+    runAnalysisGraphLayout();
+    analysisGraphState.lastSignature = boardSignature;
+  }
+
+  clampAllAnalysisGraphNodes();
+  drawAnalysisGraph();
+}
+
+/**
+ * @param {TileColor[]} tiles
+ * @returns {{blobs:Array<{key:string,color:TileColor,members:number[],cx:number,cy:number,label:string}>,edges:Array<[string,string]>,tileToBlob:string[]}}
+ */
+function buildBlobGraphData(tiles) {
+  const visited = Array.from({ length: tiles.length }, () => false);
+  const tileBlobKey = Array.from({ length: tiles.length }, () => '');
+  /** @type {Array<{key:string,color:TileColor,members:number[],cx:number,cy:number,label:string}>} */
+  const blobs = [];
+
+  for (let i = 0; i < tiles.length; i += 1) {
+    if (visited[i]) continue;
+    const color = tiles[i];
+    if (color === 'white') continue;
+
+    const stack = [i];
+    visited[i] = true;
+    const members = [];
+
+    while (stack.length > 0) {
+      const current = stack.pop();
+      if (current === undefined) break;
+      members.push(current);
+
+      for (const neighbor of getNeighbors(current)) {
+        if (visited[neighbor]) continue;
+        if (tiles[neighbor] !== color) continue;
+        visited[neighbor] = true;
+        stack.push(neighbor);
+      }
+    }
+
+    members.sort((a, b) => a - b);
+    const key = members.join('-');
+    let cx = 0;
+    let cy = 0;
+    for (const index of members) {
+      cx += tilesMeta[index].cx;
+      cy += tilesMeta[index].cy;
+      tileBlobKey[index] = key;
+    }
+    cx /= members.length;
+    cy /= members.length;
+
+    blobs.push({
+      key,
+      color,
+      members,
+      cx,
+      cy,
+      label: String(members.length)
+    });
+  }
+
+  const edgeSet = new Set();
+  for (let i = 0; i < tiles.length; i += 1) {
+    if (tiles[i] === 'white') continue;
+    const sourceKey = tileBlobKey[i];
+    if (!sourceKey) continue;
+
+    for (const neighbor of getNeighbors(i)) {
+      if (neighbor <= i) continue;
+      if (tiles[neighbor] === 'white') continue;
+      const targetKey = tileBlobKey[neighbor];
+      if (!targetKey || targetKey === sourceKey) continue;
+
+      const [a, b] = sourceKey < targetKey
+        ? [sourceKey, targetKey]
+        : [targetKey, sourceKey];
+      edgeSet.add(`${a}|${b}`);
+    }
+  }
+
+  const edges = [...edgeSet].map((edgeKey) => {
+    const splitAt = edgeKey.indexOf('|');
+    const a = edgeKey.slice(0, splitAt);
+    const b = edgeKey.slice(splitAt + 1);
+    return /** @type {[string,string]} */ ([a, b]);
+  });
+
+  return { blobs, edges, tileToBlob: tileBlobKey };
+}
+
+/**
+ * @param {Array<{key:string,color:TileColor,members:number[],cx:number,cy:number,label:string}>} blobs
+ * @param {Array<[string,string]>} edges
+ * @param {string[]} tileToBlob
+ */
+function syncAnalysisGraphState(blobs, edges, tileToBlob) {
+  /** @type {Map<string,{key:string,color:TileColor,x:number,y:number,pinned:boolean,label:string}>} */
+  const nextNodes = new Map();
+  const xSpan = Math.max(1, boardPixelWidth);
+  const ySpan = Math.max(1, boardPixelHeight);
+
+  for (const blob of blobs) {
+    const existing = analysisGraphState.nodes.get(blob.key);
+    if (existing) {
+      const clampedPosition = clampAnalysisGraphPosition(existing.x, existing.y);
+      nextNodes.set(blob.key, {
+        ...existing,
+        color: blob.color,
+        label: blob.label,
+        x: clampedPosition.x,
+        y: clampedPosition.y
+      });
+      continue;
+    }
+
+    const jitterSeed = (hashString(blob.key) % 1000) / 1000;
+    const jitterX = (jitterSeed - 0.5) * 14;
+    const jitterY = ((hashString(`${blob.key}:y`) % 1000) / 1000 - 0.5) * 14;
+
+    const x =
+      ANALYSIS_GRAPH_PADDING +
+      (blob.cx / xSpan) * (ANALYSIS_GRAPH_WIDTH - ANALYSIS_GRAPH_PADDING * 2) +
+      jitterX;
+    const y =
+      ANALYSIS_GRAPH_PADDING +
+      (blob.cy / ySpan) * (ANALYSIS_GRAPH_HEIGHT - ANALYSIS_GRAPH_PADDING * 2) +
+      jitterY;
+
+    const clampedPosition = clampAnalysisGraphPosition(x, y);
+    nextNodes.set(blob.key, {
+      key: blob.key,
+      color: blob.color,
+      x: clampedPosition.x,
+      y: clampedPosition.y,
+      pinned: false,
+      label: blob.label
+    });
+  }
+
+  analysisGraphState.nodes = nextNodes;
+  analysisGraphState.edges = edges.filter(
+    ([a, b]) => nextNodes.has(a) && nextNodes.has(b)
+  );
+  analysisGraphState.blobMembers = new Map(
+    blobs.map((blob) => [blob.key, [...blob.members]])
+  );
+  analysisGraphState.tileToBlob = [...tileToBlob];
+
+  if (
+    analysisGraphState.drag.nodeKey &&
+    !nextNodes.has(analysisGraphState.drag.nodeKey)
+  ) {
+    analysisGraphState.drag.active = false;
+    analysisGraphState.drag.nodeKey = null;
+    analysisGraphState.drag.pointerId = null;
+  }
+
+  if (
+    analysisGraphState.selectedBlobKey &&
+    !nextNodes.has(analysisGraphState.selectedBlobKey)
+  ) {
+    analysisGraphState.selectedBlobKey = null;
+  }
+}
+
+function runAnalysisGraphLayout() {
+  const nodes = [...analysisGraphState.nodes.values()];
+  if (nodes.length <= 1) {
+    clampAllAnalysisGraphNodes();
+    return;
+  }
+
+  const minSpacing = ANALYSIS_GRAPH_NODE_RADIUS * 2 + 7;
+  const preferredEdgeLength = 82;
+
+  for (let iter = 0; iter < 95; iter += 1) {
+    /** @type {Map<string,{x:number,y:number}>} */
+    const forces = new Map(nodes.map((node) => [node.key, { x: 0, y: 0 }]));
+
+    for (let i = 0; i < nodes.length; i += 1) {
+      for (let j = i + 1; j < nodes.length; j += 1) {
+        const a = nodes[i];
+        const b = nodes[j];
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const distance = Math.max(0.0001, Math.hypot(dx, dy));
+        const ux = dx / distance;
+        const uy = dy / distance;
+
+        let push = 0;
+        if (distance < minSpacing) {
+          push += (minSpacing - distance) * 0.16;
+        }
+        push += 120 / (distance * distance);
+
+        addForce(forces, a.key, -ux * push, -uy * push);
+        addForce(forces, b.key, ux * push, uy * push);
+      }
+    }
+
+    for (const [aKey, bKey] of analysisGraphState.edges) {
+      const a = analysisGraphState.nodes.get(aKey);
+      const b = analysisGraphState.nodes.get(bKey);
+      if (!a || !b) continue;
+
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      const distance = Math.max(0.0001, Math.hypot(dx, dy));
+      const ux = dx / distance;
+      const uy = dy / distance;
+      const pull = (distance - preferredEdgeLength) * 0.025;
+
+      addForce(forces, a.key, ux * pull, uy * pull);
+      addForce(forces, b.key, -ux * pull, -uy * pull);
+    }
+
+    for (let i = 0; i < analysisGraphState.edges.length; i += 1) {
+      for (let j = i + 1; j < analysisGraphState.edges.length; j += 1) {
+        const [aKey, bKey] = analysisGraphState.edges[i];
+        const [cKey, dKey] = analysisGraphState.edges[j];
+
+        if (
+          aKey === cKey ||
+          aKey === dKey ||
+          bKey === cKey ||
+          bKey === dKey
+        ) {
+          continue;
+        }
+
+        const a = analysisGraphState.nodes.get(aKey);
+        const b = analysisGraphState.nodes.get(bKey);
+        const c = analysisGraphState.nodes.get(cKey);
+        const d = analysisGraphState.nodes.get(dKey);
+        if (!a || !b || !c || !d) continue;
+
+        if (!segmentsIntersect(a, b, c, d)) continue;
+
+        const midAB = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+        const midCD = { x: (c.x + d.x) / 2, y: (c.y + d.y) / 2 };
+        const dx = midAB.x - midCD.x;
+        const dy = midAB.y - midCD.y;
+        const distance = Math.max(0.0001, Math.hypot(dx, dy));
+        const ux = dx / distance;
+        const uy = dy / distance;
+
+        const strength = 1.4;
+        addForce(forces, a.key, ux * strength, uy * strength);
+        addForce(forces, b.key, ux * strength, uy * strength);
+        addForce(forces, c.key, -ux * strength, -uy * strength);
+        addForce(forces, d.key, -ux * strength, -uy * strength);
+      }
+    }
+
+    for (const [aKey, bKey] of analysisGraphState.edges) {
+      const a = analysisGraphState.nodes.get(aKey);
+      const b = analysisGraphState.nodes.get(bKey);
+      if (!a || !b) continue;
+
+      for (const node of nodes) {
+        if (node.key === aKey || node.key === bKey) continue;
+        const closest = closestPointOnSegment(node, a, b);
+        const dx = node.x - closest.x;
+        const dy = node.y - closest.y;
+        const distance = Math.max(0.0001, Math.hypot(dx, dy));
+        if (distance >= ANALYSIS_GRAPH_NODE_RADIUS + 5) continue;
+
+        const ux = dx / distance;
+        const uy = dy / distance;
+        const push = (ANALYSIS_GRAPH_NODE_RADIUS + 5 - distance) * 0.2;
+        addForce(forces, node.key, ux * push, uy * push);
+        addForce(forces, a.key, -ux * push * 0.5, -uy * push * 0.5);
+        addForce(forces, b.key, -ux * push * 0.5, -uy * push * 0.5);
+      }
+    }
+
+    for (const node of nodes) {
+      if (node.pinned) continue;
+      const force = forces.get(node.key);
+      if (!force) continue;
+      const clampedPosition = clampAnalysisGraphPosition(
+        node.x + clamp(force.x, -3.2, 3.2),
+        node.y + clamp(force.y, -3.2, 3.2)
+      );
+      node.x = clampedPosition.x;
+      node.y = clampedPosition.y;
+    }
+  }
+
+  clampAllAnalysisGraphNodes();
+}
+
+function drawAnalysisGraph() {
+  if (!analysisGraphSvg) return;
+  clampAllAnalysisGraphNodes();
+  analysisGraphSvg.innerHTML = '';
+  const nodeLabelFontSize = getGraphNodeLabelFontSize();
+
+  for (const [aKey, bKey] of analysisGraphState.edges) {
+    const a = analysisGraphState.nodes.get(aKey);
+    const b = analysisGraphState.nodes.get(bKey);
+    if (!a || !b) continue;
+
+    const edge = createSvgEl('line', {
+      class: 'graph-edge',
+      x1: String(a.x),
+      y1: String(a.y),
+      x2: String(b.x),
+      y2: String(b.y)
+    });
+    analysisGraphSvg.appendChild(edge);
+  }
+
+  for (const node of analysisGraphState.nodes.values()) {
+    const selectedClass =
+      analysisGraphState.selectedBlobKey === node.key ? ' selected' : '';
+    const group = createSvgEl('g', {
+      class: `graph-node${selectedClass}`,
+      'data-node-key': node.key
+    });
+    const circle = createSvgEl('circle', {
+      class: 'node-circle',
+      cx: String(node.x),
+      cy: String(node.y),
+      r: String(ANALYSIS_GRAPH_NODE_RADIUS),
+      fill: COLOR_HEX[node.color]
+    });
+    const label = createSvgEl('text', {
+      class: 'node-label',
+      x: String(node.x),
+      y: String(node.y),
+      'font-size': String(nodeLabelFontSize)
+    });
+    label.textContent = node.label;
+
+    const title = createSvgEl('title');
+    title.textContent = `${node.color} blob (${node.label} tiles)`;
+
+    group.append(circle, label, title);
+    analysisGraphSvg.appendChild(group);
+  }
+}
+
+function clampAllAnalysisGraphNodes() {
+  for (const node of analysisGraphState.nodes.values()) {
+    const clampedPosition = clampAnalysisGraphPosition(node.x, node.y);
+    node.x = clampedPosition.x;
+    node.y = clampedPosition.y;
+  }
+}
+
+/**
+ * @param {number} x
+ * @param {number} y
+ * @returns {{x:number,y:number}}
+ */
+function clampAnalysisGraphPosition(x, y) {
+  const graphBounds = getAnalysisGraphBounds();
+  const minX = graphBounds.minX;
+  const maxX = graphBounds.maxX;
+  const minY = graphBounds.minY;
+  const maxY = graphBounds.maxY;
+
+  const safeX = Number.isFinite(x) ? x : (minX + maxX) / 2;
+  const safeY = Number.isFinite(y) ? y : (minY + maxY) / 2;
+
+  return {
+    x: clamp(safeX, minX, maxX),
+    y: clamp(safeY, minY, maxY)
+  };
+}
+
+/**
+ * @returns {{minX:number,maxX:number,minY:number,maxY:number}}
+ */
+function getAnalysisGraphBounds() {
+  let width = ANALYSIS_GRAPH_WIDTH;
+  let height = ANALYSIS_GRAPH_HEIGHT;
+
+  if (analysisGraphSvg) {
+    const vb = analysisGraphSvg.viewBox?.baseVal;
+    if (vb && vb.width > 0 && vb.height > 0) {
+      width = vb.width;
+      height = vb.height;
+    } else {
+      const explicitWidth = Number(analysisGraphSvg.getAttribute('width'));
+      const explicitHeight = Number(analysisGraphSvg.getAttribute('height'));
+      if (Number.isFinite(explicitWidth) && explicitWidth > 0) {
+        width = explicitWidth;
+      }
+      if (Number.isFinite(explicitHeight) && explicitHeight > 0) {
+        height = explicitHeight;
+      }
+    }
+  }
+
+  const minX = ANALYSIS_GRAPH_NODE_RADIUS + 4;
+  const minY = ANALYSIS_GRAPH_NODE_RADIUS + 4;
+  const maxX = Math.max(minX, width - (ANALYSIS_GRAPH_NODE_RADIUS + 4));
+  const maxY = Math.max(minY, height - (ANALYSIS_GRAPH_NODE_RADIUS + 4));
+
+  return { minX, maxX, minY, maxY };
+}
+
+/**
+ * @param {Map<string,{x:number,y:number}>} forceMap
+ * @param {string} key
+ * @param {number} x
+ * @param {number} y
+ */
+function addForce(forceMap, key, x, y) {
+  const force = forceMap.get(key);
+  if (!force) return;
+  force.x += x;
+  force.y += y;
+}
+
+/**
+ * @returns {number}
+ */
+function getGraphNodeLabelFontSize() {
+  const swatchCountEl = analysisSwatches[0]?.querySelector('.analysis-swatch-count');
+  const desiredPxSize = (() => {
+    if (!swatchCountEl) return 24;
+    const fontSize = Number.parseFloat(window.getComputedStyle(swatchCountEl).fontSize);
+    return Number.isFinite(fontSize) && fontSize > 0 ? fontSize : 24;
+  })();
+
+  if (!analysisGraphSvg) return desiredPxSize;
+  const vb = analysisGraphSvg.viewBox?.baseVal;
+  const viewBoxWidth = vb && vb.width > 0 ? vb.width : ANALYSIS_GRAPH_WIDTH;
+  const viewBoxHeight = vb && vb.height > 0 ? vb.height : ANALYSIS_GRAPH_HEIGHT;
+  const rect = analysisGraphSvg.getBoundingClientRect();
+  const widthScale = rect.width > 0 ? rect.width / viewBoxWidth : 1;
+  const heightScale = rect.height > 0 ? rect.height / viewBoxHeight : 1;
+  const viewportScale = Math.min(widthScale, heightScale);
+
+  if (!Number.isFinite(viewportScale) || viewportScale <= 0) {
+    return desiredPxSize;
+  }
+
+  return desiredPxSize / viewportScale;
+}
+
+/**
+ * @param {string} value
+ * @returns {number}
+ */
+function hashString(value) {
+  let hash = 0;
+  for (let i = 0; i < value.length; i += 1) {
+    hash = (hash * 31 + value.charCodeAt(i)) >>> 0;
+  }
+  return hash;
+}
+
+/**
+ * @param {{x:number,y:number}} p
+ * @param {{x:number,y:number}} a
+ * @param {{x:number,y:number}} b
+ * @returns {{x:number,y:number}}
+ */
+function closestPointOnSegment(p, a, b) {
+  const abx = b.x - a.x;
+  const aby = b.y - a.y;
+  const denominator = abx * abx + aby * aby;
+  if (denominator <= 0.0001) return { x: a.x, y: a.y };
+
+  const t = clamp(
+    ((p.x - a.x) * abx + (p.y - a.y) * aby) / denominator,
+    0,
+    1
+  );
+  return { x: a.x + abx * t, y: a.y + aby * t };
+}
+
+/**
+ * @param {{x:number,y:number}} a
+ * @param {{x:number,y:number}} b
+ * @param {{x:number,y:number}} c
+ * @param {{x:number,y:number}} d
+ * @returns {boolean}
+ */
+function segmentsIntersect(a, b, c, d) {
+  const o1 = orientation(a, b, c);
+  const o2 = orientation(a, b, d);
+  const o3 = orientation(c, d, a);
+  const o4 = orientation(c, d, b);
+  return o1 * o2 < 0 && o3 * o4 < 0;
+}
+
+/**
+ * @param {{x:number,y:number}} a
+ * @param {{x:number,y:number}} b
+ * @param {{x:number,y:number}} c
+ * @returns {number}
+ */
+function orientation(a, b, c) {
+  return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+}
+
+/**
+ * @param {PointerEvent} event
+ */
+function onGraphPointerDown(event) {
+  if (
+    appState.mode !== 'play' ||
+    appState.screen !== 'game' ||
+    appState.playVariant !== 'analysis' ||
+    !analysisGraphSvg
+  ) {
+    return;
+  }
+  const selectionCleared = setSelectedBlobKey(null);
+
+  const target = event.target;
+  if (!(target instanceof Element)) {
+    if (selectionCleared) {
+      render();
+    }
+    return;
+  }
+  const nodeGroup = target.closest('.graph-node');
+  if (!nodeGroup) {
+    if (selectionCleared) {
+      render();
+    }
+    return;
+  }
+  const nodeKey = nodeGroup.getAttribute('data-node-key');
+  if (!nodeKey) {
+    if (selectionCleared) {
+      render();
+    }
+    return;
+  }
+
+  const node = analysisGraphState.nodes.get(nodeKey);
+  if (!node) {
+    if (selectionCleared) {
+      render();
+    }
+    return;
+  }
+
+  const point = svgPointFromClientForSvg(analysisGraphSvg, event.clientX, event.clientY);
+  analysisGraphState.drag.active = true;
+  analysisGraphState.drag.nodeKey = nodeKey;
+  analysisGraphState.drag.pointerId = event.pointerId;
+  analysisGraphState.drag.offsetX = point.x - node.x;
+  analysisGraphState.drag.offsetY = point.y - node.y;
+  node.pinned = true;
+
+  analysisGraphSvg.setPointerCapture(event.pointerId);
+  render();
+  event.preventDefault();
+}
+
+/**
+ * @param {PointerEvent} event
+ */
+function onGraphPointerMove(event) {
+  if (!analysisGraphSvg) return;
+  if (!analysisGraphState.drag.active) {
+    if (updateSelectionFromGraphTarget(event.target)) {
+      render();
+    }
+    return;
+  }
+  if (analysisGraphState.drag.pointerId !== event.pointerId) return;
+
+  const nodeKey = analysisGraphState.drag.nodeKey;
+  if (!nodeKey) return;
+  const node = analysisGraphState.nodes.get(nodeKey);
+  if (!node) return;
+
+  const clampedClient = clampClientPointToSvgRect(analysisGraphSvg, event.clientX, event.clientY);
+  const point = svgPointFromClientForSvg(analysisGraphSvg, clampedClient.x, clampedClient.y);
+  const clampedPosition = clampAnalysisGraphPosition(
+    point.x - analysisGraphState.drag.offsetX,
+    point.y - analysisGraphState.drag.offsetY
+  );
+  node.x = clampedPosition.x;
+  node.y = clampedPosition.y;
+
+  drawAnalysisGraph();
+  event.preventDefault();
+}
+
+/**
+ * @param {SVGSVGElement} svgEl
+ * @param {number} clientX
+ * @param {number} clientY
+ * @returns {{x:number,y:number}}
+ */
+function clampClientPointToSvgRect(svgEl, clientX, clientY) {
+  const rect = svgEl.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) {
+    return { x: clientX, y: clientY };
+  }
+
+  return {
+    x: clamp(clientX, rect.left, rect.right),
+    y: clamp(clientY, rect.top, rect.bottom)
+  };
+}
+
+/**
+ * @param {PointerEvent} event
+ */
+function onGraphPointerLeave(event) {
+  if (!isAnalysisSelectionActive()) return;
+  if (analysisGraphState.drag.active) return;
+
+  if (setSelectedBlobKey(null)) {
+    render();
+  }
+}
+
+/**
+ * @param {PointerEvent} event
+ */
+function onGraphPointerUp(event) {
+  if (!analysisGraphSvg) return;
+  if (!analysisGraphState.drag.active) return;
+  if (analysisGraphState.drag.pointerId !== event.pointerId) return;
+
+  if (analysisGraphSvg.hasPointerCapture(event.pointerId)) {
+    analysisGraphSvg.releasePointerCapture(event.pointerId);
+  }
+  analysisGraphState.drag.active = false;
+  analysisGraphState.drag.nodeKey = null;
+  analysisGraphState.drag.pointerId = null;
+}
+
+/**
+ * @param {PointerEvent} event
+ */
+function onGraphPointerCancel(event) {
+  if (!analysisGraphSvg) return;
+  if (!analysisGraphState.drag.active) return;
+
+  if (
+    analysisGraphState.drag.pointerId !== null &&
+    analysisGraphSvg.hasPointerCapture(analysisGraphState.drag.pointerId)
+  ) {
+    analysisGraphSvg.releasePointerCapture(analysisGraphState.drag.pointerId);
+  }
+
+  analysisGraphState.drag.active = false;
+  analysisGraphState.drag.nodeKey = null;
+  analysisGraphState.drag.pointerId = null;
+}
+
+function renderAnalysisStatus() {
+  const analysisActive =
+    appState.mode === 'play' &&
+    appState.screen === 'game' &&
+    appState.playVariant === 'analysis';
+  const counts = getAnalysisPrimaryCounts();
+
+  if (analysisSessionState.selectedColor) {
+    const selected = analysisSessionState.selectedColor;
+    if (
+      (selected === 'red' || selected === 'blue' || selected === 'yellow') &&
+      counts[selected] >= 20
+    ) {
+      analysisSessionState.selectedColor = null;
+      resetAnalysisPaintState();
+    }
+  }
+
+  for (const swatch of analysisSwatches) {
+    const color = swatch.getAttribute('data-color');
+    if (color !== 'red' && color !== 'blue' && color !== 'yellow') continue;
+
+    const countEl = swatch.querySelector('.analysis-swatch-count');
+    if (countEl) {
+      countEl.textContent = String(counts[color]);
+    }
+
+    const atLimit = counts[color] >= 20;
+    swatch.disabled = atLimit;
+    swatch.classList.toggle('limit-reached', atLimit);
+    const isSelected =
+      analysisActive && analysisSessionState.selectedColor === color && !atLimit;
+    swatch.classList.toggle('selected', isSelected);
+    swatch.setAttribute('aria-pressed', isSelected ? 'true' : 'false');
+  }
+
+  updateAnalysisPaintCursor();
+}
+
+function updateAnalysisPaintCursor() {
+  if (!gameScreen) return;
+
+  const isAnalysisActive =
+    appState.mode === 'play' &&
+    appState.screen === 'game' &&
+    appState.playVariant === 'analysis';
+  const selectedColor = analysisSessionState.selectedColor;
+  const hasSelectedPrimaryColor =
+    selectedColor === 'red' || selectedColor === 'blue' || selectedColor === 'yellow';
+  const useCursor = isAnalysisActive && hasSelectedPrimaryColor;
+
+  gameScreen.classList.toggle('analysis-cursor-active', useCursor);
+  if (!useCursor) {
+    gameScreen.style.removeProperty('--analysis-cursor');
+    return;
+  }
+
+  gameScreen.style.setProperty(
+    '--analysis-cursor',
+    getAnalysisColorCursor(/** @type {'red'|'blue'|'yellow'} */ (selectedColor))
+  );
+}
+
+/**
+ * @param {'red'|'blue'|'yellow'} color
+ * @returns {string}
+ */
+function getAnalysisColorCursor(color) {
+  const cached = analysisCursorCache.get(color);
+  if (cached) return cached;
+
+  const fill = COLOR_HEX[color];
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 22 22"><polygon points="11,1.5 18.7,6 18.7,16 11,20.5 3.3,16 3.3,6" fill="${fill}" stroke="#152128" stroke-width="1.4"/></svg>`;
+  const encoded = encodeURIComponent(svg);
+  const cursor = `url("data:image/svg+xml,${encoded}") 11 11, crosshair`;
+  analysisCursorCache.set(color, cursor);
+  return cursor;
+}
+
+/**
+ * @param {Event} event
+ * @returns {boolean}
+ */
+function isEventInsideAnalysisFillControls(event) {
+  const path = typeof event.composedPath === 'function' ? event.composedPath() : [];
+  for (const entry of path) {
+    if (!(entry instanceof Element)) continue;
+    if (entry === boardSvg) return true;
+    if (entry === analysisPalette) return true;
+    if (entry.closest?.('#board')) return true;
+    if (entry.closest?.('.analysis-swatch')) return true;
+  }
+  return false;
+}
+
+function isAnalysisBoardPaintArmed() {
+  return (
+    appState.mode === 'play' &&
+    appState.screen === 'game' &&
+    appState.playVariant === 'analysis' &&
+    (analysisSessionState.selectedColor === 'red' ||
+      analysisSessionState.selectedColor === 'blue' ||
+      analysisSessionState.selectedColor === 'yellow')
+  );
+}
+
+/**
+ * @param {number} pointerId
+ */
+function beginAnalysisPaintStroke(pointerId) {
+  analysisSessionState.paint.active = true;
+  analysisSessionState.paint.pointerId = pointerId;
+  analysisSessionState.paint.didPaint = false;
+  analysisSessionState.paint.lastTileIndex = null;
+}
+
+function resetAnalysisPaintState() {
+  analysisSessionState.paint.active = false;
+  analysisSessionState.paint.pointerId = null;
+  analysisSessionState.paint.didPaint = false;
+  analysisSessionState.paint.lastTileIndex = null;
+}
+
+/**
+ * @param {number|null} pointerId
+ */
+function endAnalysisPaintStroke(pointerId) {
+  if (pointerId !== null && boardSvg.hasPointerCapture(pointerId)) {
+    boardSvg.releasePointerCapture(pointerId);
+  }
+  resetAnalysisPaintState();
+}
+
+/**
+ * @param {number} tileIndex
+ * @returns {boolean}
+ */
+function paintAnalysisTile(tileIndex) {
+  const selectedColor = analysisSessionState.selectedColor;
+  if (
+    selectedColor !== 'red' &&
+    selectedColor !== 'blue' &&
+    selectedColor !== 'yellow'
+  ) {
+    return false;
+  }
+  if (tileIndex < 0 || tileIndex >= state.tiles.length) return false;
+  if (analysisSessionState.paint.lastTileIndex === tileIndex) return false;
+  analysisSessionState.paint.lastTileIndex = tileIndex;
+  if (state.tiles[tileIndex] !== 'white') return false;
+
+  const counts = getAnalysisPrimaryCounts();
+  if (counts[selectedColor] >= 20) {
+    analysisSessionState.selectedColor = null;
+    resetAnalysisPaintState();
+    return false;
+  }
+
+  if (!analysisSessionState.paint.didPaint) {
+    state.history.push({
+      tiles: [...state.tiles]
+    });
+    analysisSessionState.paint.didPaint = true;
+  }
+
+  state.tiles[tileIndex] = selectedColor;
+  updateNoLegalMovesState();
+  hideMoveError(true);
+
+  const updatedCounts = getAnalysisPrimaryCounts();
+  if (updatedCounts[selectedColor] >= 20) {
+    analysisSessionState.selectedColor = null;
+    resetAnalysisPaintState();
+  }
+  return true;
+}
+
+/**
+ * @returns {{red:number,blue:number,yellow:number}}
+ */
+function getAnalysisPrimaryCounts() {
+  return state.tiles.reduce(
+    (acc, tile) => {
+      if (tile === 'red' || tile === 'blue' || tile === 'yellow') {
+        acc[tile] += 1;
+      }
+      return acc;
+    },
+    { red: 0, blue: 0, yellow: 0 }
+  );
 }
 
 function renderNoMovesNotice() {
   if (!noMovesNoticeEl) return;
+  const isEmptyAnalysisBoard =
+    appState.playVariant === 'analysis' &&
+    state.tiles.every((tile) => tile === 'white');
   const shouldShow =
     appState.mode === 'play' &&
     appState.screen === 'game' &&
-    noLegalMovesLeft;
+    noLegalMovesLeft &&
+    !isEmptyAnalysisBoard;
   noMovesNoticeEl.classList.toggle('hidden', !shouldShow);
+}
+
+/**
+ * @param {number} tileIndex
+ * @returns {boolean}
+ */
+function isSelectedBoardTileInAnalysisBlob(tileIndex) {
+  if (
+    appState.mode !== 'play' ||
+    appState.screen !== 'game' ||
+    appState.playVariant !== 'analysis'
+  ) {
+    return false;
+  }
+
+  const selectedKey = analysisGraphState.selectedBlobKey;
+  if (!selectedKey) return false;
+  return analysisGraphState.tileToBlob[tileIndex] === selectedKey;
+}
+
+/**
+ * @param {string|null} blobKey
+ * @returns {boolean}
+ */
+function setSelectedBlobKey(blobKey) {
+  const normalizedBlobKey = blobKey ?? null;
+  if (analysisGraphState.selectedBlobKey === normalizedBlobKey) {
+    return false;
+  }
+  analysisGraphState.selectedBlobKey = normalizedBlobKey;
+  return true;
+}
+
+/**
+ * @returns {boolean}
+ */
+function isAnalysisSelectionActive() {
+  return (
+    appState.mode === 'play' &&
+    appState.screen === 'game' &&
+    appState.playVariant === 'analysis'
+  );
+}
+
+/**
+ * @param {EventTarget|null} target
+ * @returns {boolean}
+ */
+function updateSelectionFromBoardTarget(target) {
+  if (!isAnalysisSelectionActive()) return false;
+  if (!(target instanceof Element)) return setSelectedBlobKey(null);
+
+  const tileGroup = target.closest('.tile-group');
+  if (!tileGroup) return setSelectedBlobKey(null);
+
+  const tileIndex = Number(tileGroup.getAttribute('data-index'));
+  if (!Number.isInteger(tileIndex)) return setSelectedBlobKey(null);
+
+  return setSelectedBlobKey(getBlobKeyForTileIndex(tileIndex));
+}
+
+/**
+ * @param {EventTarget|null} target
+ * @returns {boolean}
+ */
+function updateSelectionFromGraphTarget(target) {
+  if (!isAnalysisSelectionActive()) return false;
+  if (!(target instanceof Element)) return setSelectedBlobKey(null);
+
+  const nodeGroup = target.closest('.graph-node');
+  const nodeKey = nodeGroup?.getAttribute('data-node-key') ?? null;
+  return setSelectedBlobKey(nodeKey);
+}
+
+/**
+ * @param {number} tileIndex
+ * @returns {string|null}
+ */
+function getBlobKeyForTileIndex(tileIndex) {
+  if (tileIndex < 0 || tileIndex >= state.tiles.length) return null;
+  const color = state.tiles[tileIndex];
+  if (color === 'white') return null;
+
+  const cached = analysisGraphState.tileToBlob[tileIndex];
+  if (cached) return cached;
+
+  return computeBlobKeyFromTile(tileIndex, state.tiles);
+}
+
+/**
+ * @param {number} tileIndex
+ * @param {TileColor[]} tiles
+ * @returns {string|null}
+ */
+function computeBlobKeyFromTile(tileIndex, tiles) {
+  const color = tiles[tileIndex];
+  if (color === 'white') return null;
+
+  const visited = new Set([tileIndex]);
+  const stack = [tileIndex];
+  /** @type {number[]} */
+  const members = [];
+
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (current === undefined) break;
+    members.push(current);
+
+    for (const neighbor of getNeighbors(current)) {
+      if (visited.has(neighbor)) continue;
+      if (tiles[neighbor] !== color) continue;
+      visited.add(neighbor);
+      stack.push(neighbor);
+    }
+  }
+
+  members.sort((a, b) => a - b);
+  return members.join('-');
 }
 
 function renderInnerTiles() {
@@ -1493,6 +2972,7 @@ function renderInnerTiles() {
 
     group.classList.toggle('draggable', appState.mode === 'play' && isMovable(color));
     group.classList.toggle('dragging-source', draggedSourceIndex === idx);
+    group.classList.toggle('selected-blob', isSelectedBoardTileInAnalysisBlob(idx));
     group.setAttribute(
       'aria-label',
       `Row ${tilesMeta[idx].row + 1}, Column ${tilesMeta[idx].col + 1}, ${displayColor} tile`
@@ -1533,8 +3013,21 @@ function renderDragLayer() {
   dragLayer.innerHTML = '';
   if (appState.mode !== 'play') return;
 
+  if (state.dragState.sourceColor === null) return;
+
+  if (state.dragState.sourceType === 'palette') {
+    const draggedPoly = getDraggedInnerPolygon();
+    const piece = createSvgEl('polygon', {
+      class: 'drag-inner',
+      points: pointsToAttr(draggedPoly),
+      fill: COLOR_HEX[state.dragState.sourceColor]
+    });
+    dragLayer.appendChild(piece);
+    return;
+  }
+
   const sourceIndex = state.dragState.sourceIndex;
-  if (sourceIndex === null || state.dragState.sourceColor === null) return;
+  if (sourceIndex === null) return;
 
   const draggedPoly = getDraggedInnerPolygon();
   const piece = createSvgEl('polygon', {
@@ -1561,7 +3054,9 @@ function updateScore() {
   if (!scoreValueEl) return;
   const score = state.tiles.reduce((acc, tile) => (tile === 'white' ? acc + 1 : acc), 0);
   scoreValueEl.textContent = String(score);
-  updateBestScore(score);
+  if (appState.playVariant !== 'analysis') {
+    updateBestScore(score);
+  }
 }
 
 /**
@@ -1603,8 +3098,23 @@ function updateUndoButtonState() {
   undoBtn.disabled = !enabled;
 }
 
+function updateClearBoardButtonState() {
+  if (!clearBoardBtn) return;
+
+  const analysisActive =
+    appState.mode === 'play' &&
+    appState.screen === 'game' &&
+    appState.playVariant === 'analysis';
+  const hasFilledTiles = getColoredTileCount(state.tiles) > 0;
+  clearBoardBtn.disabled = !analysisActive || !hasFilledTiles;
+}
+
 /** @returns {{x:number,y:number}[]} */
 function getDraggedInnerPolygon() {
+  if (state.dragState.sourceType === 'palette') {
+    return hexPoints(state.dragState.pointerX, state.dragState.pointerY, INNER_RADIUS);
+  }
+
   const sourceIndex = state.dragState.sourceIndex;
   if (sourceIndex === null) return [];
 
@@ -1771,10 +3281,20 @@ function lineIntersection(p1, p2, a, b) {
  * @returns {{x:number,y:number}}
  */
 function svgPointFromClient(clientX, clientY) {
-  const pt = boardSvg.createSVGPoint();
+  return svgPointFromClientForSvg(boardSvg, clientX, clientY);
+}
+
+/**
+ * @param {SVGSVGElement} svgEl
+ * @param {number} clientX
+ * @param {number} clientY
+ * @returns {{x:number,y:number}}
+ */
+function svgPointFromClientForSvg(svgEl, clientX, clientY) {
+  const pt = svgEl.createSVGPoint();
   pt.x = clientX;
   pt.y = clientY;
-  const transformed = pt.matrixTransform(boardSvg.getScreenCTM().inverse());
+  const transformed = pt.matrixTransform(svgEl.getScreenCTM().inverse());
   return { x: transformed.x, y: transformed.y };
 }
 
@@ -1791,6 +3311,59 @@ function readIndexFromEvent(event) {
 
   const idx = Number(group.getAttribute('data-index'));
   return Number.isInteger(idx) ? idx : null;
+}
+
+/**
+ * @param {PointerEvent} event
+ * @returns {number|null}
+ */
+function getBoardTileIndexFromPointerEvent(event) {
+  const directIndex = readIndexFromEvent(event);
+  if (directIndex !== null) {
+    return directIndex;
+  }
+
+  const point = svgPointFromClient(event.clientX, event.clientY);
+  for (const tile of tilesMeta) {
+    const polygon = hexPoints(tile.cx, tile.cy, INNER_RADIUS);
+    if (isPointInPolygon(point, polygon)) {
+      return tile.index;
+    }
+  }
+  return null;
+}
+
+/**
+ * @param {{x:number,y:number}} point
+ * @param {{x:number,y:number}[]} polygon
+ * @returns {boolean}
+ */
+function isPointInPolygon(point, polygon) {
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i, i += 1) {
+    const xi = polygon[i].x;
+    const yi = polygon[i].y;
+    const xj = polygon[j].x;
+    const yj = polygon[j].y;
+
+    const intersects =
+      yi > point.y !== yj > point.y &&
+      point.x < ((xj - xi) * (point.y - yi)) / (yj - yi + 1e-12) + xi;
+    if (intersects) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+
+/**
+ * @param {number} value
+ * @param {number} min
+ * @param {number} max
+ * @returns {number}
+ */
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
 }
 
 /**
