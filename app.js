@@ -180,6 +180,8 @@ const appState = {
 };
 
 const BEST_SCORE_STORAGE_KEY = 'splash_best_score';
+const analysisUnlocked = readAnalysisUnlocked();
+analysisBtn?.classList.toggle('hidden', !analysisUnlocked);
 let bestScore = readBestScore();
 let noLegalMovesLeft = false;
 
@@ -701,6 +703,7 @@ function onMoveErrorButtonClick() {
 }
 
 function onAnalysisButtonClick() {
+  if (!analysisUnlocked) return;
   if (appState.mode !== 'play' || appState.screen !== 'game') return;
   if (isAnalysisTransferAnimating()) return;
   clearAnalysisMixFeedback();
@@ -3600,6 +3603,23 @@ function updateScore() {
   scoreValueEl.textContent = String(score);
   if (appState.playVariant !== 'analysis') {
     updateBestScore(score);
+  }
+}
+
+/**
+ * @returns {boolean}
+ */
+function readAnalysisUnlocked() {
+  try {
+    if (window.location.protocol === 'file:') return true;
+    const path = window.location.pathname || '';
+    if (path.endsWith('/Analysis') || path.endsWith('/Analysis/')) {
+      return true;
+    }
+    const params = new URLSearchParams(window.location.search);
+    return params.get('analysis') === '1';
+  } catch {
+    return false;
   }
 }
 
