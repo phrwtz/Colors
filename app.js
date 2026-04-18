@@ -1662,7 +1662,7 @@ function updateHoverTarget() {
     if (idx === sourceIndex) continue;
     if (!canDrop(sourceIndex, idx, state)) continue;
 
-    const overlap = getOverlapForIndex(draggedPoly, draggedArea, idx);
+    const overlap = getOverlapForIndex(draggedPoly, draggedArea, idx, 'outer');
     if (!overlap) continue;
     const containment = overlap.containment;
     if (containment > bestContainment) {
@@ -1702,7 +1702,7 @@ function updateHoverTargetForPalette() {
     const idx = tile.index;
     if (state.tiles[idx] !== 'white') continue;
 
-    const overlap = getOverlapForIndex(draggedPoly, draggedArea, idx);
+    const overlap = getOverlapForIndex(draggedPoly, draggedArea, idx, 'outer');
     if (!overlap) continue;
 
     if (overlap.containment > bestContainment) {
@@ -1832,7 +1832,7 @@ function getBestReleaseCandidate(sourceIndex) {
 
   for (const tile of tilesMeta) {
     if (tile.index === sourceIndex) continue;
-    const overlap = getOverlapForIndex(draggedPoly, draggedArea, tile.index);
+    const overlap = getOverlapForIndex(draggedPoly, draggedArea, tile.index, 'outer');
     if (!overlap) continue;
     if (overlap.targetCoverage > bestCoverage) {
       bestCoverage = overlap.targetCoverage;
@@ -1896,7 +1896,7 @@ function getOverlappedTileIndices(draggedPoly, minTargetCoverage) {
 
   const overlaps = [];
   for (const tile of tilesMeta) {
-    const overlap = getOverlapForIndex(draggedPoly, draggedArea, tile.index);
+    const overlap = getOverlapForIndex(draggedPoly, draggedArea, tile.index, 'inner');
     if (overlap && overlap.targetCoverage >= minTargetCoverage) {
       overlaps.push(tile.index);
     }
@@ -1908,10 +1908,14 @@ function getOverlappedTileIndices(draggedPoly, minTargetCoverage) {
  * @param {{x:number,y:number}[]} draggedPoly
  * @param {number} draggedArea
  * @param {number} index
+ * @param {'inner'|'outer'} [targetZone]
  * @returns {{containment:number,targetCoverage:number}|null}
  */
-function getOverlapForIndex(draggedPoly, draggedArea, index) {
-  const targetPoly = getInnerPolygonAtIndex(index);
+function getOverlapForIndex(draggedPoly, draggedArea, index, targetZone = 'inner') {
+  const targetPoly =
+    targetZone === 'outer'
+      ? getOuterPolygonAtIndex(index)
+      : getInnerPolygonAtIndex(index);
   const clipped = clipPolygonConvex(draggedPoly, targetPoly);
   const overlapArea = Math.abs(polygonArea(clipped));
   if (overlapArea <= 0) return null;
@@ -3699,6 +3703,15 @@ function getDraggedInnerPolygon() {
 function getInnerPolygonAtIndex(index) {
   const tile = tilesMeta[index];
   return hexPoints(tile.cx, tile.cy, INNER_RADIUS);
+}
+
+/**
+ * @param {number} index
+ * @returns {{x:number,y:number}[]}
+ */
+function getOuterPolygonAtIndex(index) {
+  const tile = tilesMeta[index];
+  return hexPoints(tile.cx, tile.cy, HEX_RADIUS);
 }
 
 /**
