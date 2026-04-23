@@ -1493,13 +1493,13 @@ function onPointerUp(event) {
   if (hasValidTarget) {
     const sourceColor = state.tiles[sourceIndex];
     const targetColor = state.tiles[target];
-    const firstIllegalColor = getFirstIllegalTraversedColor(
+    const illegalPath = getIllegalPathInfo(
       sourceColor,
       targetColor,
       state.dragState.traversedColors
     );
 
-    if (firstIllegalColor === null) {
+    if (illegalPath === null) {
       state.history.push({
         tiles: [...state.tiles]
       });
@@ -1508,7 +1508,9 @@ function onPointerUp(event) {
       updateNoLegalMovesState();
       hideMoveError(true);
     } else {
-      showMoveError(getIllegalPathColorMessage(sourceColor, firstIllegalColor, targetColor));
+      showMoveError(
+        getIllegalPathColorMessage(sourceColor, targetColor, illegalPath.travelSequence)
+      );
     }
   } else if (pointerMovedEnough()) {
     showMoveError(getIllegalMoveMessage(sourceIndex));
@@ -1747,25 +1749,38 @@ function observeTraversedColor(color) {
  * @param {TileColor} sourceColor
  * @param {TileColor} targetColor
  * @param {TileColor[]} traversedColors
- * @returns {TileColor|null}
+ * @returns {{travelSequence:TileColor[]}|null}
  */
-function getFirstIllegalTraversedColor(sourceColor, targetColor, traversedColors) {
+function getIllegalPathInfo(sourceColor, targetColor, traversedColors) {
   /** @type {TileColor[]} */
   const travelSequence = [sourceColor];
   for (const color of traversedColors) {
     const lastColor = travelSequence[travelSequence.length - 1];
     if (color !== lastColor) {
       travelSequence.push(color);
-      // Rule: once travel has included source color + one other color,
-      // any third traveled color (even source again) is illegal.
-      if (travelSequence.length >= 3) {
-        return color;
-      }
     }
   }
 
-  if (travelSequence.length === 2 && targetColor !== travelSequence[1]) {
-    return targetColor;
+  let lockedTargetColor = null;
+  for (let i = 1; i < travelSequence.length; i += 1) {
+    const color = travelSequence[i];
+    if (lockedTargetColor === null) {
+      if (color === sourceColor) {
+        continue;
+      }
+      lockedTargetColor = color;
+      continue;
+    }
+
+    // Rule: once travel has included source color + one other color,
+    // any third traveled color (even source again) is illegal.
+    if (color !== lockedTargetColor) {
+      return { travelSequence };
+    }
+  }
+
+  if (lockedTargetColor !== null && targetColor !== lockedTargetColor) {
+    return { travelSequence };
   }
 
   return null;
@@ -1773,12 +1788,40 @@ function getFirstIllegalTraversedColor(sourceColor, targetColor, traversedColors
 
 /**
  * @param {TileColor} sourceColor
- * @param {TileColor} illegalColor
  * @param {TileColor} targetColor
+ * @param {TileColor[]} travelSequence
  * @returns {string}
  */
-function getIllegalPathColorMessage(sourceColor, illegalColor, targetColor) {
-  return `You passed ${colorTilePhrase(sourceColor)} though ${colorTilePhrase(illegalColor)} before dropping it on ${colorTilePhrase(targetColor)}. That is illegal and the tile returned home.`;
+function getIllegalPathColorMessage(sourceColor, targetColor, travelSequence) {
+  /** @type {TileColor[]} */
+  const traversedNonSourceColors = [];
+  for (const color of travelSequence) {
+    if (color === sourceColor) continue;
+    const lastTraversed = traversedNonSourceColors[traversedNonSourceColors.length - 1];
+    if (color !== lastTraversed) {
+      traversedNonSourceColors.push(color);
+    }
+  }
+
+  // If traversal ends in the final drop target color after already passing
+  // through other non-source colors, omit that terminal target-color segment.
+  if (
+    traversedNonSourceColors.length >= 2 &&
+    traversedNonSourceColors[traversedNonSourceColors.length - 1] === targetColor
+  ) {
+    traversedNonSourceColors.pop();
+  }
+
+  if (traversedNonSourceColors.length <= 1) {
+    const traversedColor = traversedNonSourceColors[0] || targetColor;
+    return `You passed ${colorTilePhrase(sourceColor)} through ${colorTilePhrase(traversedColor)} before dropping it on ${colorTilePhrase(targetColor)}. That is illegal and the tile returned home.`;
+  }
+
+  const [firstColor, ...remainingColors] = traversedNonSourceColors;
+  const throughClause = `${colorTilePhrase(firstColor)}${remainingColors
+    .map((color) => ` and then through ${colorTilePhrase(color)}`)
+    .join('')}`;
+  return `You passed ${colorTilePhrase(sourceColor)} through ${throughClause} before dropping it on ${colorTilePhrase(targetColor)}. That is illegal and the tile returned home.`;
 }
 
 /**
@@ -1806,7 +1849,7 @@ function getIllegalMoveMessage(sourceIndex) {
     return 'You tried to drop a tile onto an empty space. That is illegal.';
   }
   if (sourceColor === releaseColor) {
-    return 'You tried to drop a tile on another tile of the same color. That is illegal.';
+    return 'You tried to drop a tile on its own color. Try again.';
   }
   if (mix(sourceColor, releaseColor) === null) {
     const sourceComponents = COLOR_COMPONENTS[sourceColor];
@@ -1856,7 +1899,7 @@ function getBestReleaseCandidate(sourceIndex) {
     }
   }
 
-  if (bestCoverage < DRAG_SELECTION_THRESHOLD || bestIdx === null) {
+  if (bestIdx === null) {
     return { index: null, containment: bestContainment, targetCoverage: bestCoverage };
   }
 
