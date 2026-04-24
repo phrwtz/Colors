@@ -125,6 +125,7 @@ const moveErrorOkBtn = document.getElementById('move-error-ok-btn');
 const moveErrorActions = moveErrorModal?.querySelector('.move-error-actions');
 const scoreValueEl = document.getElementById('score-value');
 const bestScoreValueEl = document.getElementById('best-score-value');
+const undoCountValueEl = document.getElementById('undo-count-value');
 const noMovesNoticeEl = document.getElementById('no-moves-notice');
 const gameSubtitleEl = document.getElementById('game-subtitle');
 
@@ -184,6 +185,7 @@ const analysisUnlocked = readAnalysisUnlocked();
 analysisBtn?.classList.toggle('hidden', !analysisUnlocked);
 let bestScore = readBestScore();
 let noLegalMovesLeft = false;
+let undoCount = 0;
 
 const analysisSessionState = {
   /** @type {TileColor[]|null} */
@@ -448,6 +450,7 @@ undoBtn?.addEventListener('click', () => {
   const previous = state.history.pop();
   if (!previous) return;
 
+  undoCount += 1;
   state.tiles = [...previous.tiles];
   state.dragState = createEmptyDragState();
   clearAnalysisMixFeedback();
@@ -2080,6 +2083,7 @@ function render() {
   renderDragLayer();
   renderDemoLayer();
   updateScore();
+  updateUndoCount();
   renderAnalysisStatus();
   renderNoMovesNotice();
   updateUndoButtonState();
@@ -3654,6 +3658,11 @@ function updateScore() {
   if (appState.playVariant !== 'analysis') {
     updateBestScore(score);
   }
+}
+
+function updateUndoCount() {
+  if (!undoCountValueEl) return;
+  undoCountValueEl.textContent = String(undoCount);
 }
 
 /**
