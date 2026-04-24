@@ -3417,14 +3417,22 @@ function getAnalysisPrimaryCounts() {
 
 function renderNoMovesNotice() {
   if (!noMovesNoticeEl) return;
-  const isEmptyAnalysisBoard =
-    appState.playVariant === 'analysis' &&
-    state.tiles.every((tile) => tile === 'white');
+
+  const score = state.tiles.reduce((acc, tile) => (tile === 'white' ? acc + 1 : acc), 0);
+  const clearedBoard = score === 60;
+  const isEmptyAnalysisBoard = appState.playVariant === 'analysis' && clearedBoard;
   const shouldShow =
     appState.mode === 'play' &&
     appState.screen === 'game' &&
     noLegalMovesLeft &&
     !isEmptyAnalysisBoard;
+
+  if (shouldShow) {
+    noMovesNoticeEl.textContent = clearedBoard
+      ? 'Congratulations, you cleared the board!'
+      : 'There are no legal moves left!';
+  }
+
   noMovesNoticeEl.classList.toggle('hidden', !shouldShow);
 }
 
