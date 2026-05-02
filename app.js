@@ -402,6 +402,7 @@ resetBtn?.addEventListener('click', () => {
   }
   state.dragState = createEmptyDragState();
   state.history = [];
+  undoCount = 0;
   clearAnalysisMixFeedback();
   updateNoLegalMovesState();
   hideMoveError(true);
@@ -416,6 +417,7 @@ newBoardBtn?.addEventListener('click', () => {
   state.initialTiles = [...fresh];
   state.dragState = createEmptyDragState();
   state.history = [];
+  undoCount = 0;
   clearAnalysisMixFeedback();
   if (appState.playVariant === 'analysis') {
     startAnalysisSession(fresh);
