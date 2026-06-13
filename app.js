@@ -28,10 +28,11 @@ const ANALYSIS_TRANSFER_PAUSE_MS = 45;
 const DEMO_INTRO_MESSAGE = 'Click through this demo to see how Splash is played.';
 const DEMO_HOP_MS = 430;
 const DEMO_RETURN_MS = 340;
+const ILLEGAL_MOVE_MESSAGE = 'illegal move, try again.';
 const STANDARD_GAME_SUBTITLE_HTML =
   'Drag colors to create new colors. All three primary colors clear the cell.<br />You get one point for every empty cell. Try to clear the whole board. Hint: it can be done!';
 const ANALYSIS_SUBTITLE_TEXT =
-  'You can drag colors onto the empty board or populate it with random colors by clicking on New Board. The nodes on the graph represent "blobs" - areas of adjacent tiles of the same color - on the board. The numbers in each node denote how many tiles there are in that blob. Adjacent blobs are connected by arcs between the corresponding nodes. The graph automatically updates when you make a move on the board. You can move its nodes to improve legibility, or drag one node onto another mixable node to auto-transfer as many safe moves as possible between those blobs.';
+  'You can drag colors onto the empty board or populate it with random colors by clicking on New Board. The nodes on the graph represent "blobs" - areas of adjacent tiles of the same color - on the board. The numbers in each node denote how many tiles there are in that blob. Linked blobs are connected by arcs between the corresponding nodes. The graph automatically updates when you make a move on the board. You can move its nodes to improve legibility, or drag one node onto another mixable node to auto-transfer as many safe moves as possible between those blobs.';
 
 const COLOR_HEX = {
   red: '#d94037',
@@ -309,7 +310,7 @@ const DEMO_STEPS = [
   },
   {
     message:
-      'A blue tile travels along a set of blue tiles and then lands on a yellow tile to produce a green tile.',
+      'A blue tile can land on a yellow tile in a linked blob to produce a green tile.',
     sourceIndex: 18,
     targetIndex: 23,
     pathIndices: [17, 16, 15],
@@ -318,7 +319,7 @@ const DEMO_STEPS = [
   },
   {
     message:
-      "Tiles don't have to move in straight lines. They can change direction within the same color.",
+      "The drag path no longer matters. The move is legal because the tile leaves one blob and lands in a linked blob.",
     sourceIndex: 31,
     targetIndex: 35,
     pathIndices: [32, 39, 40, 41, 34],
@@ -336,7 +337,7 @@ const DEMO_STEPS = [
   },
   {
     message:
-      "A blue tile travels along two blue tiles, then along two yellow tiles before trying to land on a red tile. Once a tile has chosen a color to travel or land on it can't change its mind so this move is illegal and the tile returns home.",
+      "A blue tile tries to land in a red blob that is not linked to its home blob, so the move is illegal and the tile returns home.",
     sourceIndex: 46,
     targetIndex: 51,
     pathIndices: [47, 48, 49, 50],
@@ -345,7 +346,7 @@ const DEMO_STEPS = [
   },
   {
     message:
-      'A red tile tries to move onto a white tile. No tile is allowed to move onto a white tile so the move is illegal.',
+      'A red tile tries to move onto a white tile. White spaces are not blobs, so the move is illegal.',
     sourceIndex: 12,
     targetIndex: 11,
     pathIndices: [],
@@ -1225,14 +1226,51 @@ function mix(sourceColor, targetColor) {
  * @returns {boolean}
  */
 function canDrop(sourceIndex, targetIndex, gameState) {
+  return isLinkedBlobMove(sourceIndex, targetIndex, gameState.tiles);
+}
+
+/**
+ * @param {number} sourceIndex
+ * @param {number} targetIndex
+ * @param {TileColor[]} tiles
+ * @returns {boolean}
+ */
+function isLinkedBlobMove(sourceIndex, targetIndex, tiles) {
   if (sourceIndex === targetIndex) return false;
 
-  const source = gameState.tiles[sourceIndex];
-  const target = gameState.tiles[targetIndex];
-  if (!isMovable(source) || !isMovable(target)) return false;
-  if (mix(source, target) === null) return false;
+  const sourceColor = tiles[sourceIndex];
+  const targetColor = tiles[targetIndex];
+  if (!isMovable(sourceColor) || !isMovable(targetColor)) return false;
+  if (mix(sourceColor, targetColor) === null) return false;
 
-  return true;
+  const sourceBlobKey = computeBlobKeyFromTile(sourceIndex, tiles);
+  const targetBlobKey = computeBlobKeyFromTile(targetIndex, tiles);
+  if (!sourceBlobKey || !targetBlobKey || sourceBlobKey === targetBlobKey) {
+    return false;
+  }
+
+  return areBlobsAdjacent(sourceBlobKey, targetBlobKey, tiles);
+}
+
+/**
+ * @param {string} sourceBlobKey
+ * @param {string} targetBlobKey
+ * @param {TileColor[]} tiles
+ * @returns {boolean}
+ */
+function areBlobsAdjacent(sourceBlobKey, targetBlobKey, tiles) {
+  for (const sourcePart of sourceBlobKey.split('-')) {
+    const sourceIndex = Number(sourcePart);
+    if (!Number.isInteger(sourceIndex)) continue;
+
+    for (const neighbor of getNeighbors(sourceIndex)) {
+      if (computeBlobKeyFromTile(neighbor, tiles) === targetBlobKey) {
+        return true;
+      }
+    }
+  }
+
+  return false;
 }
 
 /**
@@ -1282,16 +1320,10 @@ function isBoardCleared(tiles) {
  */
 function hasAnyLegalMoves(tiles) {
   for (let sourceIndex = 0; sourceIndex < tiles.length; sourceIndex += 1) {
-    const sourceColor = tiles[sourceIndex];
-    if (!isMovable(sourceColor)) continue;
+    if (!isMovable(tiles[sourceIndex])) continue;
 
     for (let targetIndex = 0; targetIndex < tiles.length; targetIndex += 1) {
-      if (targetIndex === sourceIndex) continue;
-      const targetColor = tiles[targetIndex];
-      if (!isMovable(targetColor)) continue;
-      if (!mix(sourceColor, targetColor)) continue;
-
-      if (hasColorConstrainedPath(sourceIndex, targetIndex, sourceColor, targetColor, tiles)) {
+      if (isLinkedBlobMove(sourceIndex, targetIndex, tiles)) {
         return true;
       }
     }
@@ -1512,51 +1544,25 @@ function onPointerUp(event) {
   trackDragPath();
 
   const sourceIndex = state.dragState.sourceIndex;
-  const sourceColor = state.tiles[sourceIndex];
   const release = getBestReleaseCandidate(sourceIndex);
   const releaseTile = release.index;
 
-  if (releaseTile === null || release.containment < DROP_CONTAINMENT_THRESHOLD) {
-    if (pointerMovedEnough()) {
-      showMoveError('You tried to drop a tile outside the target zone. Try again.');
-    }
-  } else {
-    const targetColor = state.tiles[releaseTile];
+  const legalDrop =
+    releaseTile !== null &&
+    release.containment >= DROP_CONTAINMENT_THRESHOLD &&
+    isLinkedBlobMove(sourceIndex, releaseTile, state.tiles);
 
-    // Enforce color legality before evaluating any path rules.
-    if (targetColor === 'white') {
-      showMoveError('You cannot drop a tile on a white space.');
-    } else if (mix(sourceColor, targetColor) === null) {
-      showMoveError(
-        `You tried to drop ${colorTilePhrase(sourceColor)} on ${colorTilePhrase(targetColor)}. That is illegal and the tile returned home.`
-      );
-    } else {
-      // Only for legal target colors do we apply path-tracing legality.
-      const traversedPathColors = getTraversedPathColorsForDrop(
-        sourceColor,
-        targetColor,
-        state.dragState.traversedColors
-      );
-
-      const illegalPathMessage = getIllegalPathColorMessage(
-        sourceColor,
-        targetColor,
-        traversedPathColors
-      );
-
-      if (illegalPathMessage === null) {
-        state.history.push({
-          tiles: [...state.tiles]
-        });
-        const updated = applyMove(sourceIndex, releaseTile, state);
-        state.tiles = updated.tiles;
-        startBoardTimerIfNeeded();
-        updateNoLegalMovesState();
-        hideMoveError(true);
-      } else {
-        showMoveError(illegalPathMessage);
-      }
-    }
+  if (legalDrop) {
+    state.history.push({
+      tiles: [...state.tiles]
+    });
+    const updated = applyMove(sourceIndex, releaseTile, state);
+    state.tiles = updated.tiles;
+    startBoardTimerIfNeeded();
+    updateNoLegalMovesState();
+    hideMoveError(true);
+  } else if (pointerMovedEnough()) {
+    showMoveError(ILLEGAL_MOVE_MESSAGE);
   }
 
   if (boardSvg.hasPointerCapture(event.pointerId)) {
@@ -2272,7 +2278,7 @@ function buildBlobGraphData(tiles) {
       const sourceColor = blobColorByKey.get(sourceKey);
       const targetColor = blobColorByKey.get(targetKey);
       if (!sourceColor || !targetColor) continue;
-      if (shouldSuppressAnalysisGraphEdge(sourceColor, targetColor)) continue;
+      if (!mix(sourceColor, targetColor)) continue;
 
       const [a, b] = sourceKey < targetKey
         ? [sourceKey, targetKey]

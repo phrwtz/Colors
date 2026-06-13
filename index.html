@@ -29,12 +29,12 @@
       <section id="instructions-screen" class="screen instructions-screen hidden">
         <div class="panel instructions-panel">
           <h2>How Colors Works</h2>
-          <p>Move a primary color tile onto a legal neighboring color to score and transform the board.</p>
+          <p>Move a tile from one blob onto a tile in a linked, mixable blob to score and transform the board.</p>
           <ul>
             <li>Primary colors are red, blue, and yellow.</li>
             <li>Mixing two different neighboring primary tiles creates a mixed color.</li>
             <li>White tiles add to the score and can never be landed on.</li>
-            <li>Path and target-color rules determine whether a move is legal.</li>
+            <li>Legal moves start in one blob and land on a tile in an edge-linked, mixable blob.</li>
           </ul>
           <div class="hero-actions">
             <button id="instructions-demo-btn" type="button">Watch Demo</button>
