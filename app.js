@@ -27,6 +27,7 @@ const ANALYSIS_TRANSFER_PAUSE_MS = 45;
 
 const DEMO_INTRO_MESSAGE = 'Click through this demo to see how Splash is played.';
 const DEMO_HOP_MS = 430;
+const LINKED_BLOB_DEMO_HOP_MS = 2000;
 const DEMO_RETURN_MS = 340;
 const ILLEGAL_MOVE_MESSAGE = 'illegal move, try again.';
 const STANDARD_GAME_SUBTITLE_HTML =
@@ -139,7 +140,9 @@ const landingDemoBtn = document.getElementById('landing-demo-btn');
 
 const instructionsDemoBtn = document.getElementById('instructions-demo-btn');
 const instructionsExitBtn = document.getElementById('instructions-exit-btn');
+const demoBackBtn = document.getElementById('demo-back-btn');
 const demoExitBtn = document.getElementById('demo-exit-btn');
+const demoShowBtn = document.getElementById('demo-show-btn');
 
 const tilesMeta = buildTileMeta();
 const indexByRowCol = new Map(tilesMeta.map((tile) => [keyOf(tile.row, tile.col), tile.index]));
@@ -213,6 +216,9 @@ const demoState = {
   active: false,
   running: false,
   stepIndex: 0,
+  screenIndex: -1,
+  animationApplied: false,
+  screenStartTiles: /** @type {TileColor[]|null} */ (null),
   version: 0,
   finalTimer: /** @type {number|null} */ (null)
 };
@@ -265,9 +271,19 @@ const DEMO_STEPS = [
   },
   {
     message:
+      'You do this by moving the colored hexagons from one tile to another. When a tile has all three primary colors it turns white.',
+    messageOnly: true,
+    sourceIndex: 0,
+    targetIndex: 0,
+    pathIndices: [],
+    resolution: 'none',
+    illegalReturn: false
+  },
+  {
+    message:
       'A blue tile moves onto a neighboring red tile to produce a purple tile. One white tile is created and adds to the score.',
     sourceIndex: 1,
-    targetIndex: 2,
+    targetIndex: 9,
     pathIndices: [],
     resolution: 'mix',
     illegalReturn: false
@@ -283,79 +299,81 @@ const DEMO_STEPS = [
   },
   {
     message:
-      'A red tile moves onto a neighboring yellow tile to produce an orange tile. One white tile is created and adds to the score.',
-    sourceIndex: 9,
-    targetIndex: 10,
+      'A yellow tile moves onto a neighboring red tile to produce an orange tile. One white tile is created and adds to the score.',
+    sourceIndex: 53,
+    targetIndex: 54,
     pathIndices: [],
     resolution: 'mix',
     illegalReturn: false
   },
   {
     message:
-      'A blue tile moves onto an orange tile and produces a white tile. Two white tiles are created and scored.',
-    sourceIndex: 11,
-    targetIndex: 10,
+      'You can move a primary color onto a tile with a mix of the other two primary colors. When you do that the tile turns white.',
+    messageOnly: true,
+    sourceIndex: 0,
+    targetIndex: 0,
+    pathIndices: [],
+    resolution: 'none',
+    illegalReturn: false
+  },
+  {
+    message:
+      'A blue tile moves onto an orange tile. Since orange is a comgination of red and yellow, adding blue makes the tile white.',
+    sourceIndex: 47,
+    targetIndex: 54,
     pathIndices: [],
     resolution: 'white-pair',
     illegalReturn: false
   },
   {
     message:
-      'A green tile moves onto a yellow tile and produces a white tile. Two white tiles are created and scored.',
+      'A green tile moves onto a red tile. Green is blue plus yellow so adding red produces a white tile.',
     sourceIndex: 5,
-    targetIndex: 6,
+    targetIndex: 13,
     pathIndices: [],
     resolution: 'white-pair',
     illegalReturn: false
   },
   {
     message:
-      'A blue tile can land on a yellow tile in a linked blob to produce a green tile.',
-    sourceIndex: 18,
-    targetIndex: 23,
-    pathIndices: [17, 16, 15],
-    resolution: 'mix',
+      'We call a set of adjacent tiles of the same color a "blob" and blobs that touch at at least one point are said to be "linked." If two blobs are linked then any tile in one of the blobs can be moved onto a tile in the other blob as long as the colors permit the move.',
+    messageOnly: true,
+    sourceIndex: 0,
+    targetIndex: 0,
+    pathIndices: [],
+    resolution: 'none',
     illegalReturn: false
   },
   {
     message:
-      "The drag path no longer matters. The move is legal because the tile leaves one blob and lands in a linked blob.",
-    sourceIndex: 31,
+      'A blue tile starts inside its blob and lands on a yellow tile inside a linked blob. Because blue and yellow can mix, the move is legal and creates green.',
+    sourceIndex: 40,
     targetIndex: 35,
-    pathIndices: [32, 39, 40, 41, 34],
+    pathIndices: [],
     resolution: 'mix',
     illegalReturn: false
   },
   {
     message:
       'A blue tile tries to land on a purple tile but that tile already contains blue so the move is illegal and the tile returns home.',
-    sourceIndex: 3,
-    targetIndex: 2,
+    sourceIndex: 18,
+    targetIndex: 9,
     pathIndices: [],
     resolution: 'none',
     illegalReturn: true
   },
   {
     message:
-      "A blue tile tries to land in a red blob that is not linked to its home blob, so the move is illegal and the tile returns home.",
-    sourceIndex: 46,
+      "A blue tile tries to land on a red blob that is not linked to its home blob, so the move is illegal and the tile returns home.",
+    sourceIndex: 16,
     targetIndex: 51,
-    pathIndices: [47, 48, 49, 50],
-    resolution: 'none',
-    illegalReturn: true
-  },
-  {
-    message:
-      'A red tile tries to move onto a white tile. White spaces are not blobs, so the move is illegal.',
-    sourceIndex: 12,
-    targetIndex: 11,
     pathIndices: [],
     resolution: 'none',
     illegalReturn: true
   },
   {
     message:
-      'See if you can make all the tiles white!',
+      'See if you can make all the tiles white! After many tries we think that it is always possible to do, starting from any screen with equal numbers of red, blue, and yellow tiles, but we have been unable to prove this.',
     messageOnly: true,
     sourceIndex: 0,
     targetIndex: 0,
@@ -472,7 +490,11 @@ undoBtn?.addEventListener('click', () => {
 landingDemoBtn?.addEventListener('click', enterDemoMode);
 instructionsDemoBtn?.addEventListener('click', enterDemoMode);
 instructionsExitBtn?.addEventListener('click', onInstructionsExit);
+demoBackBtn?.addEventListener('click', onDemoBackButtonClick);
 demoExitBtn?.addEventListener('click', exitDemoToGame);
+demoShowBtn?.addEventListener('click', () => {
+  void replayDemoAnimation();
+});
 playDemoBtn?.addEventListener('click', () => {
   if (isAnalysisTransferAnimating()) return;
   enterDemoMode();
@@ -550,6 +572,11 @@ function exitDemoToGame() {
   setScreen('game');
   gameScreen?.classList.remove('demo-mode');
 
+  if (demoBackBtn) {
+    demoBackBtn.disabled = false;
+    demoBackBtn.classList.add('hidden');
+  }
+
   if (moveErrorOkBtn) {
     moveErrorOkBtn.textContent = 'OK';
     moveErrorOkBtn.disabled = false;
@@ -616,8 +643,13 @@ function enterDemoMode() {
   setScreen('game');
   gameScreen?.classList.add('demo-mode');
 
+  if (demoBackBtn) {
+    demoBackBtn.classList.remove('hidden');
+    demoBackBtn.disabled = true;
+  }
   if (demoExitBtn) {
     demoExitBtn.classList.remove('hidden');
+    demoExitBtn.textContent = 'Exit';
   }
 
   state.tiles = createDemoBoard();
@@ -627,6 +659,9 @@ function enterDemoMode() {
   demoState.active = true;
   demoState.running = false;
   demoState.stepIndex = 0;
+  demoState.screenIndex = -1;
+  demoState.animationApplied = false;
+  demoState.screenStartTiles = null;
 
   showMoveMessage(DEMO_INTRO_MESSAGE, 'Next', false);
   render();
@@ -641,6 +676,9 @@ function stopDemoMode() {
   demoState.active = false;
   demoState.running = false;
   demoState.stepIndex = 0;
+  demoState.screenIndex = -1;
+  demoState.animationApplied = false;
+  demoState.screenStartTiles = null;
   demoState.version += 1;
 
   clearDemoAnimation();
@@ -714,6 +752,50 @@ function onMoveErrorButtonClick() {
     return;
   }
   hideMoveError();
+}
+
+function onDemoBackButtonClick() {
+  if (!demoState.active || demoState.running) return;
+
+  const previousScreenIndex = demoState.screenIndex - 1;
+  restoreDemoScreen(previousScreenIndex);
+}
+
+/**
+ * @param {number} screenIndex
+ */
+function restoreDemoScreen(screenIndex) {
+  const targetIndex = Math.max(-1, Math.min(screenIndex, DEMO_STEPS.length - 1));
+
+  restoreDemoBoardBeforeScreen(targetIndex);
+
+  demoState.screenIndex = targetIndex;
+  demoState.stepIndex = targetIndex + 1;
+  demoState.running = false;
+  demoState.animationApplied = false;
+  demoState.screenStartTiles = targetIndex < 0 ? null : [...state.tiles];
+  demoState.version += 1;
+
+  if (targetIndex < 0) {
+    showMoveMessage(DEMO_INTRO_MESSAGE, 'Next', false);
+  } else {
+    showMoveMessage(DEMO_STEPS[targetIndex].message, 'Next', false);
+  }
+
+  render();
+}
+
+/**
+ * @param {number} screenIndex
+ */
+function restoreDemoBoardBeforeScreen(screenIndex) {
+  state.tiles = [...state.initialTiles];
+  state.dragState = createEmptyDragState();
+  clearDemoAnimation();
+
+  for (let i = 0; i < screenIndex; i += 1) {
+    applyDemoResolution(DEMO_STEPS[i]);
+  }
 }
 
 function onAnalysisButtonClick() {
@@ -794,53 +876,79 @@ function selectAnalysisSwatchFromEvent(event) {
 
 async function advanceDemoStep() {
   if (!demoState.active || demoState.running) return;
-  if (demoState.stepIndex >= DEMO_STEPS.length) return;
 
-  const step = DEMO_STEPS[demoState.stepIndex];
-  demoState.stepIndex += 1;
-  demoState.running = true;
-
-  showMoveMessage(step.message, 'Next', true);
-
-  const version = demoState.version;
-  const completed = await playDemoStep(step, version);
-  if (!completed || !isDemoVersionActive(version)) return;
-
-  demoState.running = false;
-  render();
+  if (demoState.screenIndex >= 0 && !demoState.animationApplied) {
+    applyDemoResolution(DEMO_STEPS[demoState.screenIndex]);
+  }
 
   if (demoState.stepIndex >= DEMO_STEPS.length) {
-    if (moveErrorOkBtn) {
-      moveErrorOkBtn.disabled = true;
-      moveErrorOkBtn.classList.add('hidden');
-    }
+    updateDemoControls();
+    render();
     return;
   }
 
-  if (moveErrorOkBtn) {
-    moveErrorOkBtn.disabled = false;
+  const step = DEMO_STEPS[demoState.stepIndex];
+  demoState.screenIndex = demoState.stepIndex;
+  demoState.stepIndex += 1;
+  demoState.animationApplied = false;
+  demoState.screenStartTiles = [...state.tiles];
+  clearDemoAnimation();
+  showMoveMessage(step.message, 'Next', false);
+  updateDemoControls();
+  render();
+}
+
+async function replayDemoAnimation() {
+  if (!demoState.active || demoState.running) return;
+  const step = getCurrentDemoStep();
+  if (!step || step.messageOnly) return;
+
+  demoState.running = true;
+  if (demoState.screenStartTiles) {
+    state.tiles = [...demoState.screenStartTiles];
+  } else {
+    restoreDemoBoardBeforeScreen(demoState.screenIndex);
+    demoState.screenStartTiles = [...state.tiles];
   }
+  state.dragState = createEmptyDragState();
+  clearDemoAnimation();
+  updateDemoControls();
+
+  const version = demoState.version;
+  const completed = await animateDemoPath(step, version);
+  if (!completed || !isDemoVersionActive(version)) return;
+
+  applyDemoResolution(step);
+  demoState.animationApplied = true;
+  demoState.running = false;
+  clearDemoAnimation();
+  updateDemoControls();
+  render();
+}
+
+/** @returns {DemoStep|null} */
+function getCurrentDemoStep() {
+  if (demoState.screenIndex < 0 || demoState.screenIndex >= DEMO_STEPS.length) {
+    return null;
+  }
+
+  return DEMO_STEPS[demoState.screenIndex];
 }
 
 /**
  * @param {DemoStep} step
- * @param {number} version
- * @returns {Promise<boolean>}
+ * @returns {number}
  */
-async function playDemoStep(step, version) {
-  if (step.messageOnly) {
-    clearDemoAnimation();
-    render();
-    return true;
+function getDemoHopMs(step) {
+  if (
+    (step.sourceIndex === 40 && step.targetIndex === 35) ||
+    (step.sourceIndex === 18 && step.targetIndex === 9) ||
+    (step.sourceIndex === 16 && step.targetIndex === 51)
+  ) {
+    return LINKED_BLOB_DEMO_HOP_MS;
   }
 
-  const animated = await animateDemoPath(step, version);
-  if (!animated || !isDemoVersionActive(version)) return false;
-
-  applyDemoResolution(step);
-  clearDemoAnimation();
-  render();
-  return true;
+  return DEMO_HOP_MS;
 }
 
 /**
@@ -861,7 +969,7 @@ async function animateDemoPath(step, version) {
 
   let currentPoint = sourcePoint;
   for (const destination of waypoints) {
-    const moved = await tweenDemoPosition(currentPoint, destination, DEMO_HOP_MS, version);
+    const moved = await tweenDemoPosition(currentPoint, destination, getDemoHopMs(step), version);
     if (!moved) return false;
     currentPoint = destination;
   }
@@ -1017,15 +1125,51 @@ function showMoveMessage(message, buttonLabel, disabled) {
   moveErrorOkBtn.disabled = disabled;
 
   if (appState.mode === 'demo') {
+    demoExitBtn?.classList.remove('hidden');
+    if (demoExitBtn) {
+      demoExitBtn.textContent = 'Exit';
+    }
     moveErrorOkBtn.classList.remove('hidden');
     moveErrorActions?.classList.remove('hidden');
+    updateDemoControls();
   } else {
+    demoBackBtn?.classList.add('hidden');
+    demoExitBtn?.classList.add('hidden');
+    demoShowBtn?.classList.add('hidden');
     moveErrorOkBtn.classList.add('hidden');
     moveErrorOkBtn.disabled = true;
     moveErrorActions?.classList.add('hidden');
   }
 
   moveErrorModal.classList.remove('hidden');
+}
+
+
+function updateDemoControls() {
+  if (appState.mode !== 'demo') return;
+
+  const currentStep = getCurrentDemoStep();
+  const canGoBack = demoState.screenIndex >= 0;
+  const canShow = Boolean(currentStep && !currentStep.messageOnly);
+  const canGoNext = demoState.stepIndex < DEMO_STEPS.length;
+
+  if (demoBackBtn) {
+    demoBackBtn.classList.toggle('hidden', !canGoBack);
+    demoBackBtn.disabled = demoState.running || !canGoBack;
+  }
+  if (demoExitBtn) {
+    demoExitBtn.classList.remove('hidden');
+    demoExitBtn.textContent = 'Exit';
+    demoExitBtn.disabled = demoState.running;
+  }
+  if (demoShowBtn) {
+    demoShowBtn.classList.toggle('hidden', !canShow);
+    demoShowBtn.disabled = demoState.running || !canShow;
+  }
+  if (moveErrorOkBtn) {
+    moveErrorOkBtn.classList.toggle('hidden', !canGoNext);
+    moveErrorOkBtn.disabled = demoState.running || !canGoNext;
+  }
 }
 
 /** @returns {TileColor[]} */
@@ -1092,6 +1236,7 @@ function createDemoBoard() {
     [10, 'yellow'],
     [11, 'blue'],
     [12, 'red'],
+    [13, 'red'],
     [15, 'blue'],
     [16, 'blue'],
     [17, 'blue'],
@@ -1112,7 +1257,9 @@ function createDemoBoard() {
     [48, 'blue'],
     [49, 'yellow'],
     [50, 'yellow'],
-    [51, 'red']
+    [51, 'red'],
+    [53, 'yellow'],
+    [54, 'red']
   ];
 
   for (const [index, color] of fixedTiles) {
