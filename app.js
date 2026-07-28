@@ -31,7 +31,7 @@ const LINKED_BLOB_DEMO_HOP_MS = 2000;
 const DEMO_RETURN_MS = 340;
 const ILLEGAL_MOVE_MESSAGE = 'illegal move, try again.';
 const STANDARD_GAME_SUBTITLE_HTML =
-  'Drag colors to create new colors. All three primary colors clear the cell.<br />You get one point for every empty cell. Try to clear the whole board. Hint: it can be done!';
+  'Drag colors to create new colors. All three primary colors clear the cell.<br />You get one point for every empty cell. Try to clear the whole board. It can be done!';
 const ANALYSIS_SUBTITLE_TEXT =
   'You can drag colors onto the empty board or populate it with random colors by clicking on New Board. The nodes on the graph represent "blobs" - areas of adjacent tiles of the same color - on the board. The numbers in each node denote how many tiles there are in that blob. Linked blobs are connected by arcs between the corresponding nodes. The graph automatically updates when you make a move on the board. You can move its nodes to improve legibility, or drag one node onto another mixable node to auto-transfer as many safe moves as possible between those blobs.';
 
@@ -113,11 +113,14 @@ const analysisBtn = document.getElementById('analysis-btn');
 const undoBtn = document.getElementById('undo-btn');
 const resetBtn = document.getElementById('reset-btn');
 const newBoardBtn = document.getElementById('new-board-btn');
+const autoPlayBtn = document.getElementById('auto-play-btn');
 const clearBoardBtn = document.getElementById('clear-board-btn');
 const analysisMixFeedbackEl = document.getElementById('analysis-mix-feedback');
 const analysisPalette = document.getElementById('analysis-palette');
 const analysisGraphWrap = document.getElementById('analysis-graph-wrap');
 const analysisGraphSvg = document.getElementById('analysis-graph');
+const gameScreen = document.getElementById('game-screen');
+const gameShell = document.querySelector('#game-screen .game-shell');
 const gameBoardWrap = document.querySelector('#game-screen .board-layout .board-wrap');
 const analysisSwatches = Array.from(document.querySelectorAll('.analysis-swatch'));
 
@@ -134,7 +137,6 @@ const gameSubtitleEl = document.getElementById('game-subtitle');
 
 const landingScreen = document.getElementById('landing-screen');
 const instructionsScreen = document.getElementById('instructions-screen');
-const gameScreen = document.getElementById('game-screen');
 
 const landingDemoBtn = document.getElementById('landing-demo-btn');
 
@@ -185,10 +187,9 @@ const appState = {
   playVariant: 'standard'
 };
 
-const BEST_SCORE_STORAGE_KEY = 'splash_best_score';
 const analysisUnlocked = readAnalysisUnlocked();
 analysisBtn?.classList.toggle('hidden', !analysisUnlocked);
-let bestScore = readBestScore();
+let bestScore = 0;
 let noLegalMovesLeft = false;
 let undoCount = 0;
 let boardTimerStartMs = null;
@@ -255,6 +256,11 @@ const analysisGraphState = {
 const analysisCursorCache = new Map();
 const analysisTransferState = {
   active: false
+};
+
+const autoPlayState = {
+  active: false,
+  stopRequested: false
 };
 
 /** @type {DemoStep[]} */
@@ -404,7 +410,7 @@ window.addEventListener('pointermove', onGlobalPointerMove);
 window.addEventListener('pointerup', onGlobalPointerUp);
 window.addEventListener('pointercancel', onGlobalPointerCancel);
 window.addEventListener('pointerdown', onGlobalPointerDown);
-window.addEventListener('resize', syncAnalysisGraphWrapHeight);
+window.addEventListener('resize', syncGameBoardSize);
 
 moveErrorOkBtn?.addEventListener('click', onMoveErrorButtonClick);
 analysisBtn?.addEventListener('click', onAnalysisButtonClick);
@@ -435,7 +441,7 @@ resetBtn?.addEventListener('click', () => {
 
 newBoardBtn?.addEventListener('click', () => {
   if (appState.mode !== 'play') return;
-  if (isAnalysisTransferAnimating()) return;
+  if (isAnalysisTransferAnimating() || autoPlayState.active) return;
   const fresh = createShuffledBoard();
   state.tiles = fresh;
   state.initialTiles = [...fresh];
@@ -452,9 +458,20 @@ newBoardBtn?.addEventListener('click', () => {
   render();
 });
 
+autoPlayBtn?.addEventListener('click', () => {
+  if (appState.mode !== 'play' || appState.screen !== 'game') return;
+  if (autoPlayState.active) {
+    autoPlayState.stopRequested = true;
+    updateClearBoardButtonState();
+    return;
+  }
+  if (analysisTransferState.active) return;
+  void runAutoPlay();
+});
+
 clearBoardBtn?.addEventListener('click', () => {
   if (appState.mode !== 'play') return;
-  if (isAnalysisTransferAnimating()) return;
+  if (isAnalysisTransferAnimating() || autoPlayState.active) return;
   if (appState.playVariant !== 'analysis') return;
   if (getColoredTileCount(state.tiles) === 0) return;
 
@@ -521,7 +538,7 @@ function createEmptyDragState() {
  * @returns {boolean}
  */
 function isAnalysisTransferAnimating() {
-  return analysisTransferState.active;
+  return analysisTransferState.active || autoPlayState.active;
 }
 
 function enterLandingScreen() {
@@ -1170,6 +1187,244 @@ function updateDemoControls() {
     moveErrorOkBtn.classList.toggle('hidden', !canGoNext);
     moveErrorOkBtn.disabled = demoState.running || !canGoNext;
   }
+}
+
+
+async function runAutoPlay() {
+  autoPlayState.active = true;
+  autoPlayState.stopRequested = false;
+  if (autoPlayBtn) autoPlayBtn.textContent = 'Stop';
+  hideMoveError(true);
+  state.history = [];
+  undoCount = 0;
+  startBoardTimerIfNeeded();
+  updateNoLegalMovesState();
+  render();
+
+  try {
+    while (!autoPlayState.stopRequested) {
+      const plan = findAutoPlayMove(state.tiles);
+      if (!plan) {
+        updateNoLegalMovesState();
+        render();
+        await waitForAutoPlayMs(2000);
+        if (autoPlayState.stopRequested) break;
+        const fresh = createShuffledBoard();
+        state.tiles = fresh;
+        state.initialTiles = [...fresh];
+        state.history = [];
+        undoCount = 0;
+        resetBoardTimer();
+        startBoardTimerIfNeeded();
+        clearDemoAnimation();
+        updateNoLegalMovesState();
+        render();
+        continue;
+      }
+      const animated = await animateAutoPlayMove(plan);
+      if (!animated || autoPlayState.stopRequested) break;
+      const updated = applyMove(plan.sourceIndex, plan.targetIndex, state);
+      state.tiles = updated.tiles;
+      clearDemoAnimation();
+      updateNoLegalMovesState();
+      render();
+      await waitForAutoPlayMs(500);
+    }
+  } finally {
+    autoPlayState.active = false;
+    autoPlayState.stopRequested = false;
+    clearDemoAnimation();
+    updateNoLegalMovesState();
+    render();
+  }
+}
+
+/**
+ * @param {TileColor[]} tiles
+ * @returns {{sourceIndex:number,targetIndex:number,sourceBlobKey:string,targetBlobKey:string,path:number[]}|null}
+ */
+function findAutoPlayMove(tiles) {
+  const graph = buildBlobGraphData(tiles);
+  if (graph.blobs.length === 0 || graph.edges.length === 0) return null;
+  const blobsByKey = new Map(graph.blobs.map((blob) => [blob.key, blob]));
+  const shuffledEdges = shuffleCopy(graph.edges);
+
+  for (const [aKey, bKey] of shuffledEdges) {
+    const directions = Math.random() < 0.5 ? [[aKey, bKey], [bKey, aKey]] : [[bKey, aKey], [aKey, bKey]];
+    for (const [sourceBlobKey, targetBlobKey] of directions) {
+      const sourceBlob = blobsByKey.get(sourceBlobKey);
+      const targetBlob = blobsByKey.get(targetBlobKey);
+      if (!sourceBlob || !targetBlob) continue;
+      const sources = shuffleCopy(sourceBlob.members);
+      const targets = shuffleCopy(targetBlob.members);
+      for (const sourceIndex of sources) {
+        for (const targetIndex of targets) {
+          const updated = applyMove(sourceIndex, targetIndex, { ...state, tiles });
+          if (updated.tiles === tiles) continue;
+          const path = buildAutoPlayAnimationPath(sourceIndex, targetIndex, sourceBlobKey, targetBlobKey, tiles);
+          return { sourceIndex, targetIndex, sourceBlobKey, targetBlobKey, path };
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
+/**
+ * @param {TileColor[]} tiles
+ * @returns {boolean}
+ */
+function isAutoPlayGraphConnected(tiles) {
+  const graph = buildBlobGraphData(tiles);
+  if (graph.blobs.length === 0) return true;
+  const counts = getPrimaryComponentCounts(tiles);
+  if (counts.red !== counts.blue || counts.red !== counts.yellow) return false;
+  if (graph.blobs.length === 1) return false;
+  const degree = new Map(graph.blobs.map((blob) => [blob.key, 0]));
+  for (const [a, b] of graph.edges) {
+    degree.set(a, (degree.get(a) || 0) + 1);
+    degree.set(b, (degree.get(b) || 0) + 1);
+  }
+  return graph.blobs.every((blob) => (degree.get(blob.key) || 0) > 0);
+}
+
+/**
+ * @param {TileColor[]} tiles
+ * @returns {{red:number,blue:number,yellow:number}}
+ */
+function getPrimaryComponentCounts(tiles) {
+  const counts = { red: 0, blue: 0, yellow: 0 };
+  for (const color of tiles) {
+    if (color === 'white') continue;
+    for (const component of COLOR_COMPONENTS[color]) {
+      counts[component] += 1;
+    }
+  }
+  return counts;
+}
+
+/**
+ * @param {number} sourceIndex
+ * @param {number} targetIndex
+ * @param {string} sourceBlobKey
+ * @param {string} targetBlobKey
+ * @param {TileColor[]} tiles
+ * @returns {number[]}
+ */
+function buildAutoPlayAnimationPath(sourceIndex, targetIndex, sourceBlobKey, targetBlobKey, tiles) {
+  const sourceMembers = sourceBlobKey.split('-').map(Number);
+  const targetMembers = targetBlobKey.split('-').map(Number);
+  let bridgeSource = sourceIndex;
+  let bridgeTarget = targetIndex;
+
+  for (const sourceMember of sourceMembers) {
+    const neighbor = getNeighbors(sourceMember).find((index) => targetMembers.includes(index));
+    if (neighbor !== undefined) {
+      bridgeSource = sourceMember;
+      bridgeTarget = neighbor;
+      break;
+    }
+  }
+
+  const sourcePath = findPathWithinColorBlob(sourceIndex, bridgeSource, tiles) || [sourceIndex, bridgeSource];
+  const targetPath = findPathWithinColorBlob(bridgeTarget, targetIndex, tiles) || [bridgeTarget, targetIndex];
+  return [...sourcePath, bridgeTarget, ...targetPath.slice(1)].filter((index, pos, values) => pos === 0 || index !== values[pos - 1]);
+}
+
+/**
+ * @param {number} start
+ * @param {number} end
+ * @param {TileColor[]} tiles
+ * @returns {number[]|null}
+ */
+function findPathWithinColorBlob(start, end, tiles) {
+  if (start === end) return [start];
+  const color = tiles[start];
+  const queue = [start];
+  const visited = new Set([start]);
+  const previous = new Map();
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (current === undefined) break;
+    for (const neighbor of getNeighbors(current)) {
+      if (visited.has(neighbor) || tiles[neighbor] !== color) continue;
+      visited.add(neighbor);
+      previous.set(neighbor, current);
+      if (neighbor === end) {
+        const path = [end];
+        let cursor = end;
+        while (cursor !== start) {
+          cursor = previous.get(cursor);
+          if (cursor === undefined) return null;
+          path.push(cursor);
+        }
+        path.reverse();
+        return path;
+      }
+      queue.push(neighbor);
+    }
+  }
+  return null;
+}
+
+/**
+ * @param {{sourceIndex:number,targetIndex:number,path:number[]}} plan
+ * @returns {Promise<boolean>}
+ */
+async function animateAutoPlayMove(plan) {
+  const sourceColor = state.tiles[plan.sourceIndex];
+  const points = plan.path
+    .filter((index) => Number.isInteger(index) && tilesMeta[index])
+    .map((index) => getTileCenter(index));
+  if (points.length === 0) return false;
+  if (points.length === 1) points.push({ ...points[0] });
+  setDemoAnimation(plan.sourceIndex, sourceColor, points[0].x, points[0].y);
+  render();
+  const duration = Math.max(500, points.length * 180);
+  const startedAt = performance.now();
+  const segments = points.length - 1;
+  return new Promise((resolve) => {
+    function frame(now) {
+      if (!autoPlayState.active || autoPlayState.stopRequested) {
+        resolve(false);
+        return;
+      }
+      const frameTime = Number.isFinite(now) ? now : performance.now();
+      const progress = Math.min(1, Math.max(0, (frameTime - startedAt) / duration));
+      const scaled = progress * segments;
+      const segmentIndex = Math.min(segments - 1, Math.floor(scaled));
+      const local = segmentIndex === segments - 1 ? Math.min(1, scaled - segmentIndex) : scaled - segmentIndex;
+      const from = points[segmentIndex];
+      const to = points[segmentIndex + 1];
+      if (!from || !to) {
+        resolve(false);
+        return;
+      }
+      const eased = easeInOutCubic(local);
+      demoAnimation.x = from.x + (to.x - from.x) * eased;
+      demoAnimation.y = from.y + (to.y - from.y) * eased;
+      render();
+      if (progress < 1) {
+        requestAnimationFrame(frame);
+        return;
+      }
+      resolve(true);
+    }
+    requestAnimationFrame(frame);
+  });
+}
+
+/** @param {number} ms */
+function waitForAutoPlayMs(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+/** @template T @param {T[]} values @returns {T[]} */
+function shuffleCopy(values) {
+  const copy = [...values];
+  shuffleInPlace(copy);
+  return copy;
 }
 
 /** @returns {TileColor[]} */
@@ -2256,7 +2511,7 @@ function renderLandingBoard() {
 }
 
 function render() {
-  syncAnalysisGraphWrapHeight();
+  syncGameBoardSize();
   renderAnalysisGraph();
   maybeCaptureAnalysisMaxState();
   renderInnerTiles();
@@ -2270,6 +2525,40 @@ function render() {
   renderNoMovesNotice();
   updateUndoButtonState();
   updateClearBoardButtonState();
+}
+
+
+function syncGameBoardSize() {
+  syncBoardRenderWidth();
+  syncAnalysisGraphWrapHeight();
+}
+
+function syncBoardRenderWidth() {
+  if (!gameScreen || !gameShell || !gameSubtitleEl || !gameBoardWrap || appState.screen !== 'game') return;
+
+  const subtitleRect = gameSubtitleEl.getBoundingClientRect();
+  const boardRect = gameBoardWrap.getBoundingClientRect();
+  const wrapStyles = window.getComputedStyle(gameBoardWrap);
+  const appStyles = window.getComputedStyle(document.querySelector('.app') || document.body);
+  const wrapChromeX =
+    Number.parseFloat(wrapStyles.paddingLeft) +
+    Number.parseFloat(wrapStyles.paddingRight) +
+    Number.parseFloat(wrapStyles.borderLeftWidth) +
+    Number.parseFloat(wrapStyles.borderRightWidth);
+  const wrapChromeY =
+    Number.parseFloat(wrapStyles.paddingTop) +
+    Number.parseFloat(wrapStyles.paddingBottom) +
+    Number.parseFloat(wrapStyles.borderTopWidth) +
+    Number.parseFloat(wrapStyles.borderBottomWidth);
+  const appChromeX = Number.parseFloat(appStyles.paddingLeft) + Number.parseFloat(appStyles.paddingRight);
+  const bottomInset = 12;
+  const boardTop = boardRect.top > subtitleRect.bottom ? boardRect.top : subtitleRect.bottom;
+  const availableRenderHeight = Math.max(40, window.innerHeight - boardTop - bottomInset - wrapChromeY);
+  const maxRenderWidth = Math.max(40, window.innerWidth - appChromeX - wrapChromeX - 8);
+  const widthFromHeight = availableRenderHeight * (boardPixelWidth / boardPixelHeight);
+  const nextWidth = Math.floor(Math.min(maxRenderWidth, widthFromHeight));
+  gameScreen.style.setProperty('--game-board-render-width', `${nextWidth}px`);
+  gameScreen.style.setProperty('--board-shell-width', `${nextWidth + wrapChromeX}px`);
 }
 
 function syncAnalysisGraphWrapHeight() {
@@ -3792,7 +4081,7 @@ function renderInnerTiles() {
     const displayColor = draggedSourceIndex === idx || animatedSourceIndex === idx ? 'white' : color;
     inner.setAttribute('fill', COLOR_HEX[displayColor]);
 
-    group.classList.toggle('draggable', appState.mode === 'play' && isMovable(color));
+    group.classList.toggle('draggable', appState.mode === 'play' && !autoPlayState.active && isMovable(color));
     group.classList.toggle('dragging-source', draggedSourceIndex === idx);
     group.classList.toggle('selected-blob', isSelectedBoardTileInAnalysisBlob(idx));
     group.setAttribute(
@@ -3961,35 +4250,15 @@ function readAnalysisUnlocked() {
 }
 
 /**
- * @returns {number|null}
- */
-function readBestScore() {
-  try {
-    const raw = window.localStorage.getItem(BEST_SCORE_STORAGE_KEY);
-    if (raw === null) return null;
-    const value = Number.parseInt(raw, 10);
-    if (!Number.isFinite(value) || value <= 0) return null;
-    return value;
-  } catch {
-    return null;
-  }
-}
-
-/**
  * @param {number} score
  */
 function updateBestScore(score) {
-  if (score > 0 && (bestScore === null || score > bestScore)) {
+  if (score > bestScore) {
     bestScore = score;
-    try {
-      window.localStorage.setItem(BEST_SCORE_STORAGE_KEY, String(score));
-    } catch {
-      // Ignore storage failures (private mode / disabled storage).
-    }
   }
 
   if (!bestScoreValueEl) return;
-  bestScoreValueEl.textContent = bestScore === null ? 'No score yet' : String(bestScore);
+  bestScoreValueEl.textContent = String(bestScore);
 }
 
 function updateUndoButtonState() {
@@ -4003,6 +4272,10 @@ function updateUndoButtonState() {
 }
 
 function updateClearBoardButtonState() {
+  if (autoPlayBtn) {
+    autoPlayBtn.textContent = autoPlayState.active ? 'Stop' : 'Auto Play';
+    autoPlayBtn.disabled = appState.mode !== 'play' || appState.screen !== 'game' || appState.playVariant === 'analysis';
+  }
   if (!clearBoardBtn) return;
 
   const analysisActive =

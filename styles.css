@@ -5,7 +5,8 @@
   --line: #2b3840;
   --shadow: rgba(0, 0, 0, 0.12);
   --board-render-width: min(80vw, 690px, calc((100vh - 300px) * 1.14));
-  --board-shell-width: calc(var(--board-render-width) + 0.8rem + 4px);
+  --game-board-render-width: var(--board-render-width);
+  --board-shell-width: calc(var(--game-board-render-width) + 1rem + 4px);
 
   --red: #d94037;
   --blue: #2763d8;
@@ -118,6 +119,22 @@ body {
   text-align: left;
 }
 
+.game-screen:not(.analysis-mode):not(.demo-mode) .topbar {
+  display: block;
+  position: relative;
+}
+
+.game-screen:not(.analysis-mode):not(.demo-mode) .topbar-actions {
+  position: absolute;
+  top: 0;
+  right: 0;
+}
+
+.game-screen:not(.analysis-mode):not(.demo-mode) .title-block {
+  width: var(--board-shell-width);
+  max-width: 100%;
+}
+
 .game-shell {
   width: var(--board-shell-width);
   max-width: 100%;
@@ -175,6 +192,11 @@ body {
 .subtitle {
   margin: 0.2rem 0 0;
   opacity: 0.85;
+}
+
+.game-screen .subtitle {
+  width: var(--board-shell-width);
+  max-width: 100%;
 }
 
 .score-pill {
@@ -486,6 +508,11 @@ button:focus-visible {
   width: fit-content;
 }
 
+.game-screen:not(.analysis-mode) .board-layout .board-wrap {
+  width: var(--board-shell-width);
+  max-width: 100%;
+}
+
 #board,
 #landing-board {
   display: block;
@@ -496,6 +523,7 @@ button:focus-visible {
 }
 
 #board {
+  width: var(--game-board-render-width);
   touch-action: none;
 }
 
