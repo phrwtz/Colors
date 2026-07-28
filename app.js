@@ -128,8 +128,6 @@ const moveErrorModal = document.getElementById('move-error-modal');
 const moveErrorText = document.getElementById('move-error-text');
 const moveErrorOkBtn = document.getElementById('move-error-ok-btn');
 const moveErrorActions = moveErrorModal?.querySelector('.move-error-actions');
-const scoreValueEl = document.getElementById('score-value');
-const bestScoreValueEl = document.getElementById('best-score-value');
 const undoCountValueEl = document.getElementById('undo-count-value');
 const boardTimerValueEl = document.getElementById('board-timer-value');
 const noMovesNoticeEl = document.getElementById('no-moves-notice');
@@ -1207,7 +1205,7 @@ async function runAutoPlay() {
       if (!plan) {
         updateNoLegalMovesState();
         render();
-        await waitForAutoPlayMs(2000);
+        await waitForAutoPlayMs(5000);
         if (autoPlayState.stopRequested) break;
         const fresh = createShuffledBoard();
         state.tiles = fresh;
@@ -1269,39 +1267,6 @@ function findAutoPlayMove(tiles) {
   }
 
   return null;
-}
-
-/**
- * @param {TileColor[]} tiles
- * @returns {boolean}
- */
-function isAutoPlayGraphConnected(tiles) {
-  const graph = buildBlobGraphData(tiles);
-  if (graph.blobs.length === 0) return true;
-  const counts = getPrimaryComponentCounts(tiles);
-  if (counts.red !== counts.blue || counts.red !== counts.yellow) return false;
-  if (graph.blobs.length === 1) return false;
-  const degree = new Map(graph.blobs.map((blob) => [blob.key, 0]));
-  for (const [a, b] of graph.edges) {
-    degree.set(a, (degree.get(a) || 0) + 1);
-    degree.set(b, (degree.get(b) || 0) + 1);
-  }
-  return graph.blobs.every((blob) => (degree.get(blob.key) || 0) > 0);
-}
-
-/**
- * @param {TileColor[]} tiles
- * @returns {{red:number,blue:number,yellow:number}}
- */
-function getPrimaryComponentCounts(tiles) {
-  const counts = { red: 0, blue: 0, yellow: 0 };
-  for (const color of tiles) {
-    if (color === 'white') continue;
-    for (const component of COLOR_COMPONENTS[color]) {
-      counts[component] += 1;
-    }
-  }
-  return counts;
 }
 
 /**
@@ -3942,9 +3907,11 @@ function renderNoMovesNotice() {
     !isEmptyAnalysisBoard;
 
   if (shouldShow) {
-    noMovesNoticeEl.textContent = clearedBoard
+    updateBestScore(score);
+    const terminalMessage = clearedBoard
       ? 'Congratulations, you cleared the board!'
       : 'There are no legal moves left!';
+    noMovesNoticeEl.textContent = `${terminalMessage} Score: ${score}, best this session: ${bestScore}.`;
   }
 
   noMovesNoticeEl.classList.toggle('hidden', !shouldShow);
@@ -4162,9 +4129,7 @@ function renderDemoLayer() {
 }
 
 function updateScore() {
-  if (!scoreValueEl) return;
   const score = state.tiles.reduce((acc, tile) => (tile === 'white' ? acc + 1 : acc), 0);
-  scoreValueEl.textContent = String(score);
   if (appState.playVariant !== 'analysis') {
     updateBestScore(score);
   }
@@ -4256,9 +4221,6 @@ function updateBestScore(score) {
   if (score > bestScore) {
     bestScore = score;
   }
-
-  if (!bestScoreValueEl) return;
-  bestScoreValueEl.textContent = String(bestScore);
 }
 
 function updateUndoButtonState() {
