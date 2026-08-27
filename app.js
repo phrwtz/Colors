@@ -4124,7 +4124,7 @@ function renderAnalysisStatus() {
       componentCounts.red === componentCounts.blue &&
       componentCounts.red === componentCounts.yellow;
     if (analysisConnectivityStatusEl) {
-      analysisConnectivityStatusEl.textContent = connected ? 'Connected' : 'Dsconnected.';
+      analysisConnectivityStatusEl.textContent = connected ? 'Connected' : 'Disconnected';
     }
     if (analysisBalanceStatusEl) {
       analysisBalanceStatusEl.textContent = balanced ? 'Balanced' : 'Unbalanced';
