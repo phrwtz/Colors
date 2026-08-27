@@ -54,6 +54,8 @@
                 <p class="demo-word" aria-label="DEMO" style='font-family: "Comic Sans MS", "Comic Sans", cursive;'>
                   <span class="splash-letter" style="color: #d94037;">D</span><span class="splash-letter" style="color: #2763d8;">E</span><span class="splash-letter" style="color: #f0c419;">M</span><span class="splash-letter" style="color: #b45be7;">O</span>
                 </p>
+                <p class="score-pill">Score: <span id="score-value">0</span></p>
+                <p class="score-pill">Best: <span id="best-score-value">0</span></p>
                 <p class="score-pill">Undos: <span id="undo-count-value">0</span></p>
                 <p class="score-pill">Timer: <span id="board-timer-value">0 minutes, 0 seconds</span></p>
               </div>
@@ -85,7 +87,7 @@
             <button id="undo-btn" type="button">Undo</button>
             <button id="reset-btn" type="button">Reset</button>
             <button id="new-board-btn" type="button">New Board</button>
-            <button id="auto-play-btn" type="button">Auto Play</button>
+            <button id="auto-play-btn" class="hidden" type="button">Auto Play</button>
             <button id="clear-board-btn" class="hidden" type="button">Clear Board</button>
             <p id="analysis-mix-feedback" class="analysis-mix-feedback hidden" role="status" aria-live="polite"></p>
           </section>
@@ -104,9 +106,16 @@
               <button class="analysis-swatch yellow" data-color="yellow" type="button" aria-label="Place yellow tile">
                 <span class="analysis-swatch-count">0</span>
               </button>
+              <button class="analysis-swatch white" data-color="white" type="button" aria-label="Erase tile">
+                <span class="analysis-swatch-count">0</span>
+              </button>
             </aside>
 
             <section class="board-wrap" aria-label="Colors board">
+              <p id="analysis-board-status" class="analysis-board-status hidden" aria-live="polite">
+                <span id="analysis-connectivity-status">Dsconnected.</span>
+                <span id="analysis-balance-status">Balanced</span>
+              </p>
               <svg id="board" role="img" aria-label="Hex board"></svg>
             </section>
 

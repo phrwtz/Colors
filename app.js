@@ -128,10 +128,15 @@ const moveErrorModal = document.getElementById('move-error-modal');
 const moveErrorText = document.getElementById('move-error-text');
 const moveErrorOkBtn = document.getElementById('move-error-ok-btn');
 const moveErrorActions = moveErrorModal?.querySelector('.move-error-actions');
+const scoreValueEl = document.getElementById('score-value');
+const bestScoreValueEl = document.getElementById('best-score-value');
 const undoCountValueEl = document.getElementById('undo-count-value');
 const boardTimerValueEl = document.getElementById('board-timer-value');
 const noMovesNoticeEl = document.getElementById('no-moves-notice');
 const gameSubtitleEl = document.getElementById('game-subtitle');
+const analysisBoardStatusEl = document.getElementById('analysis-board-status');
+const analysisConnectivityStatusEl = document.getElementById('analysis-connectivity-status');
+const analysisBalanceStatusEl = document.getElementById('analysis-balance-status');
 
 const landingScreen = document.getElementById('landing-screen');
 const instructionsScreen = document.getElementById('instructions-screen');
@@ -258,7 +263,10 @@ const analysisTransferState = {
 
 const autoPlayState = {
   active: false,
-  stopRequested: false
+  stopRequested: false,
+  terminalNotice: false,
+  waitingForStep: false,
+  stepResolve: null
 };
 
 /** @type {DemoStep[]} */
@@ -408,6 +416,7 @@ window.addEventListener('pointermove', onGlobalPointerMove);
 window.addEventListener('pointerup', onGlobalPointerUp);
 window.addEventListener('pointercancel', onGlobalPointerCancel);
 window.addEventListener('pointerdown', onGlobalPointerDown);
+window.addEventListener('keydown', onAutoPlayKeyDown);
 window.addEventListener('resize', syncGameBoardSize);
 
 moveErrorOkBtn?.addEventListener('click', onMoveErrorButtonClick);
@@ -457,9 +466,14 @@ newBoardBtn?.addEventListener('click', () => {
 });
 
 autoPlayBtn?.addEventListener('click', () => {
-  if (appState.mode !== 'play' || appState.screen !== 'game') return;
+  if (
+    appState.mode !== 'play' ||
+    appState.screen !== 'game' ||
+    appState.playVariant !== 'standard'
+  ) return;
   if (autoPlayState.active) {
     autoPlayState.stopRequested = true;
+    resolveAutoPlayStep(false);
     updateClearBoardButtonState();
     return;
   }
@@ -734,8 +748,13 @@ function updatePlayVariantUi() {
     appState.mode === 'play' &&
     appState.screen === 'game' &&
     appState.playVariant === 'analysis';
+  const inRegularPlayView =
+    appState.mode === 'play' &&
+    appState.screen === 'game' &&
+    appState.playVariant === 'standard';
   analysisPalette?.classList.toggle('hidden', !inGamePlayView);
   analysisGraphWrap?.classList.toggle('hidden', !inGamePlayView);
+  autoPlayBtn?.classList.toggle('hidden', !inRegularPlayView);
   clearBoardBtn?.classList.toggle('hidden', appState.playVariant !== 'analysis');
   if (!inGamePlayView) {
     clearAnalysisMixFeedback();
@@ -823,15 +842,13 @@ function onAnalysisButtonClick() {
   appState.playVariant = switchingToAnalysis ? 'analysis' : 'standard';
   updatePlayVariantUi();
 
-  const fresh = createEmptyBoard();
-  state.tiles = fresh;
-  state.initialTiles = [...fresh];
   state.history = [];
   resetBoardTimer();
   state.dragState = createEmptyDragState();
 
   if (switchingToAnalysis) {
-    startAnalysisSession(fresh);
+    state.initialTiles = [...state.tiles];
+    startAnalysisSession(state.tiles);
   } else {
     clearAnalysisSession();
   }
@@ -872,8 +889,8 @@ function selectAnalysisSwatchFromEvent(event) {
   if (!(target instanceof HTMLElement)) return;
 
   const color = target.dataset.color;
-  if (!color || !isPrimary(/** @type {TileColor} */ (color))) return;
-  const counts = getAnalysisPrimaryCounts();
+  if (!isAnalysisToolColor(color)) return;
+  const counts = getAnalysisTileCounts();
   if ((color === 'red' || color === 'blue' || color === 'yellow') && counts[color] >= 20) {
     return;
   }
@@ -1191,7 +1208,12 @@ function updateDemoControls() {
 async function runAutoPlay() {
   autoPlayState.active = true;
   autoPlayState.stopRequested = false;
-  if (autoPlayBtn) autoPlayBtn.textContent = 'Stop';
+  const stepByStep = appState.playVariant === 'analysis';
+  /** @type {Array<{sourceIndex:number,targetIndex:number,path:number[]}>} */
+  let primaryTripletPlans = [];
+  if (autoPlayBtn) {
+    autoPlayBtn.textContent = stepByStep ? 'Stop (Space: next)' : 'Stop';
+  }
   hideMoveError(true);
   state.history = [];
   undoCount = 0;
@@ -1201,12 +1223,23 @@ async function runAutoPlay() {
 
   try {
     while (!autoPlayState.stopRequested) {
-      const plan = findAutoPlayMove(state.tiles);
+      if (stepByStep) {
+        const shouldAdvance = await waitForAutoPlayStep();
+        if (!shouldAdvance || autoPlayState.stopRequested) break;
+      }
+      if (primaryTripletPlans.length === 0) {
+        primaryTripletPlans = findPrimaryTripletSequence(state.tiles) || [];
+      }
+      const plan = primaryTripletPlans.shift() || findAutoPlayMove(state.tiles);
       if (!plan) {
+        autoPlayState.terminalNotice = true;
+        updateBestScore(getCurrentScore());
         updateNoLegalMovesState();
         render();
+        if (stepByStep) break;
         await waitForAutoPlayMs(5000);
         if (autoPlayState.stopRequested) break;
+        autoPlayState.terminalNotice = false;
         const fresh = createShuffledBoard();
         state.tiles = fresh;
         state.initialTiles = [...fresh];
@@ -1226,21 +1259,208 @@ async function runAutoPlay() {
       clearDemoAnimation();
       updateNoLegalMovesState();
       render();
-      await waitForAutoPlayMs(500);
+      if (!stepByStep) await waitForAutoPlayMs(500);
     }
   } finally {
+    resolveAutoPlayStep(false);
     autoPlayState.active = false;
     autoPlayState.stopRequested = false;
+    autoPlayState.terminalNotice = false;
     clearDemoAnimation();
     updateNoLegalMovesState();
     render();
   }
 }
 
+/** @param {KeyboardEvent} event */
+function onAutoPlayKeyDown(event) {
+  if (
+    event.code !== 'Space' ||
+    event.repeat ||
+    !autoPlayState.active ||
+    !autoPlayState.waitingForStep ||
+    appState.playVariant !== 'analysis'
+  ) {
+    return;
+  }
+
+  event.preventDefault();
+  resolveAutoPlayStep(true);
+}
+
+/** @returns {Promise<boolean>} */
+function waitForAutoPlayStep() {
+  if (autoPlayState.stopRequested) return Promise.resolve(false);
+  autoPlayState.waitingForStep = true;
+  return new Promise((resolve) => {
+    autoPlayState.stepResolve = resolve;
+  });
+}
+
+/** @param {boolean} shouldAdvance */
+function resolveAutoPlayStep(shouldAdvance) {
+  const resolve = autoPlayState.stepResolve;
+  autoPlayState.stepResolve = null;
+  autoPlayState.waitingForStep = false;
+  if (resolve) resolve(shouldAdvance);
+}
+
+/**
+ * @param {TileColor[]} tiles
+ * @returns {boolean}
+ */
+function isBoardSolvableByMetablobs(tiles) {
+  const graph = buildBlobGraphData(tiles);
+  if (graph.blobs.length === 0) return true;
+
+  const blobsByKey = new Map(graph.blobs.map((blob) => [blob.key, blob]));
+  const adjacency = new Map(graph.blobs.map((blob) => [blob.key, []]));
+  for (const [a, b] of graph.edges) {
+    adjacency.get(a)?.push(b);
+    adjacency.get(b)?.push(a);
+  }
+
+  const visited = new Set();
+  for (const blob of graph.blobs) {
+    if (visited.has(blob.key)) continue;
+    const componentKeys = [];
+    const stack = [blob.key];
+    visited.add(blob.key);
+
+    while (stack.length > 0) {
+      const key = stack.pop();
+      if (!key) continue;
+      componentKeys.push(key);
+      for (const neighbor of adjacency.get(key) || []) {
+        if (visited.has(neighbor)) continue;
+        visited.add(neighbor);
+        stack.push(neighbor);
+      }
+    }
+
+    if (!isMetablobSolvable(componentKeys, blobsByKey, adjacency)) return false;
+  }
+
+  return true;
+}
+
+/**
+ * @param {string[]} blobKeys
+ * @param {Map<string,{key:string,color:TileColor,members:number[]}>} blobsByKey
+ * @param {Map<string,string[]>} adjacency
+ * @returns {boolean}
+ */
+function isMetablobSolvable(blobKeys, blobsByKey, adjacency) {
+  if (blobKeys.length < 2) return false;
+  const counts = { red: 0, blue: 0, yellow: 0 };
+  for (const key of blobKeys) {
+    const blob = blobsByKey.get(key);
+    if (!blob) continue;
+    const components = COLOR_COMPONENTS[blob.color] || [];
+    for (const component of components) {
+      if (component === 'red' || component === 'blue' || component === 'yellow') {
+        counts[component] += blob.members.length;
+      }
+    }
+  }
+  if (counts.red !== counts.blue || counts.red !== counts.yellow) return false;
+
+  return blobKeys.every((key) => hasEnoughLinkedComplementaryTiles(key, blobsByKey, adjacency));
+}
+
+/**
+ * @param {string} blobKey
+ * @param {Map<string,{key:string,color:TileColor,members:number[]}>} blobsByKey
+ * @param {Map<string,string[]>} adjacency
+ * @returns {boolean}
+ */
+function hasEnoughLinkedComplementaryTiles(blobKey, blobsByKey, adjacency) {
+  const blob = blobsByKey.get(blobKey);
+  if (!blob) return false;
+  const complementaryColor = getComplementaryPrimaryColor(blob.color);
+  if (!complementaryColor) return true;
+
+  let linkedComplementaryTiles = 0;
+  for (const neighborKey of adjacency.get(blobKey) || []) {
+    const neighbor = blobsByKey.get(neighborKey);
+    if (neighbor?.color === complementaryColor) {
+      linkedComplementaryTiles += neighbor.members.length;
+    }
+  }
+
+  return linkedComplementaryTiles >= blob.members.length;
+}
+
+/**
+ * @param {TileColor} color
+ * @returns {TileColor|null}
+ */
+function getComplementaryPrimaryColor(color) {
+  if (color === 'orange') return 'blue';
+  if (color === 'green') return 'red';
+  if (color === 'purple') return 'yellow';
+  return null;
+}
+
+/**
+ * @param {number} targetIndex
+ * @param {TileColor[]} tiles
+ * @returns {boolean}
+ */
+function isAutoPlayCompositePlacementSupported(targetIndex, tiles) {
+  const compositeColor = tiles[targetIndex];
+  const complementaryColor = getComplementaryPrimaryColor(compositeColor);
+  if (!complementaryColor) return true;
+
+  return getNeighbors(targetIndex).some((index) =>
+    tiles[index] === compositeColor || tiles[index] === complementaryColor
+  );
+}
+
+/**
+ * Finds three distinct adjoining primary colors and returns the two moves that
+ * combine them on their shared target tile.
+ * @param {TileColor[]} tiles
+ * @returns {Array<{sourceIndex:number,targetIndex:number,path:number[]}>|null}
+ */
+function findPrimaryTripletSequence(tiles) {
+  const targetCandidates = shuffleCopy(
+    tilesMeta.map((tile) => tile.index).filter((index) => isPrimary(tiles[index]))
+  );
+
+  for (const targetIndex of targetCandidates) {
+    const primaryNeighbors = shuffleCopy(
+      getNeighbors(targetIndex).filter((index) => isPrimary(tiles[index]))
+    );
+
+    for (let first = 0; first < primaryNeighbors.length; first += 1) {
+      for (let second = first + 1; second < primaryNeighbors.length; second += 1) {
+        const firstSource = primaryNeighbors[first];
+        const secondSource = primaryNeighbors[second];
+        const colors = new Set([
+          tiles[targetIndex],
+          tiles[firstSource],
+          tiles[secondSource]
+        ]);
+        if (!colors.has('red') || !colors.has('blue') || !colors.has('yellow')) {
+          continue;
+        }
+
+        return [
+          { sourceIndex: firstSource, targetIndex, path: [firstSource, targetIndex] },
+          { sourceIndex: secondSource, targetIndex, path: [secondSource, targetIndex] }
+        ];
+      }
+    }
+  }
+
+  return null;
+}
 /**
  * @param {TileColor[]} tiles
  * @returns {{sourceIndex:number,targetIndex:number,sourceBlobKey:string,targetBlobKey:string,path:number[]}|null}
  */
+
 function findAutoPlayMove(tiles) {
   const graph = buildBlobGraphData(tiles);
   if (graph.blobs.length === 0 || graph.edges.length === 0) return null;
@@ -1259,6 +1479,8 @@ function findAutoPlayMove(tiles) {
         for (const targetIndex of targets) {
           const updated = applyMove(sourceIndex, targetIndex, { ...state, tiles });
           if (updated.tiles === tiles) continue;
+          if (!isAutoPlayCompositePlacementSupported(targetIndex, updated.tiles)) continue;
+          if (!isBoardSolvableByMetablobs(updated.tiles)) continue;
           const path = buildAutoPlayAnimationPath(sourceIndex, targetIndex, sourceBlobKey, targetBlobKey, tiles);
           return { sourceIndex, targetIndex, sourceBlobKey, targetBlobKey, path };
         }
@@ -1284,7 +1506,7 @@ function buildAutoPlayAnimationPath(sourceIndex, targetIndex, sourceBlobKey, tar
   let bridgeTarget = targetIndex;
 
   for (const sourceMember of sourceMembers) {
-    const neighbor = getNeighbors(sourceMember).find((index) => targetMembers.includes(index));
+    const neighbor = targetMembers.find((index) => doTilesTouch(sourceMember, index));
     if (neighbor !== undefined) {
       bridgeSource = sourceMember;
       bridgeTarget = neighbor;
@@ -1596,6 +1818,33 @@ function canDrop(sourceIndex, targetIndex, gameState) {
   return isLinkedBlobMove(sourceIndex, targetIndex, gameState.tiles);
 }
 
+
+/**
+ * @param {number} sourceIndex
+ * @param {number} targetIndex
+ * @returns {boolean}
+ */
+function canAnalysisMoveToEmptyTile(sourceIndex, targetIndex) {
+  return appState.playVariant === 'analysis' &&
+    sourceIndex !== targetIndex &&
+    sourceIndex >= 0 &&
+    sourceIndex < state.tiles.length &&
+    targetIndex >= 0 &&
+    targetIndex < state.tiles.length &&
+    isMovable(state.tiles[sourceIndex]) &&
+    state.tiles[targetIndex] === 'white';
+}
+
+/**
+ * @param {number} sourceIndex
+ * @param {number} targetIndex
+ */
+function moveAnalysisTileToEmptySpace(sourceIndex, targetIndex) {
+  const sourceColor = state.tiles[sourceIndex];
+  state.tiles[sourceIndex] = 'white';
+  state.tiles[targetIndex] = sourceColor;
+}
+
 /**
  * @param {number} sourceIndex
  * @param {number} targetIndex
@@ -1616,7 +1865,10 @@ function isLinkedBlobMove(sourceIndex, targetIndex, tiles) {
     return false;
   }
 
-  return areBlobsAdjacent(sourceBlobKey, targetBlobKey, tiles);
+  const sourceLinkedColor = tiles[sourceIndex];
+  const targetLinkedColor = tiles[targetIndex];
+  return areBlobColorsLinkCompatible(sourceLinkedColor, targetLinkedColor) &&
+    areBlobsTouching(sourceBlobKey, targetBlobKey);
 }
 
 /**
@@ -1626,18 +1878,56 @@ function isLinkedBlobMove(sourceIndex, targetIndex, tiles) {
  * @returns {boolean}
  */
 function areBlobsAdjacent(sourceBlobKey, targetBlobKey, tiles) {
-  for (const sourcePart of sourceBlobKey.split('-')) {
-    const sourceIndex = Number(sourcePart);
-    if (!Number.isInteger(sourceIndex)) continue;
+  return areBlobsTouching(sourceBlobKey, targetBlobKey);
+}
 
-    for (const neighbor of getNeighbors(sourceIndex)) {
-      if (computeBlobKeyFromTile(neighbor, tiles) === targetBlobKey) {
-        return true;
-      }
+/**
+ * @param {string} sourceBlobKey
+ * @param {string} targetBlobKey
+ * @returns {boolean}
+ */
+function areBlobsTouching(sourceBlobKey, targetBlobKey) {
+  const sourceMembers = sourceBlobKey.split('-').map(Number).filter(Number.isInteger);
+  const targetMembers = targetBlobKey.split('-').map(Number).filter(Number.isInteger);
+
+  for (const sourceIndex of sourceMembers) {
+    for (const targetIndex of targetMembers) {
+      if (doTilesTouch(sourceIndex, targetIndex)) return true;
     }
   }
 
   return false;
+}
+
+/**
+ * @param {number} sourceIndex
+ * @param {number} targetIndex
+ * @returns {boolean}
+ */
+function doTilesTouch(sourceIndex, targetIndex) {
+  if (sourceIndex === targetIndex) return false;
+  const sourceTile = tilesMeta[sourceIndex];
+  const targetTile = tilesMeta[targetIndex];
+  if (!sourceTile || !targetTile) return false;
+  const dx = sourceTile.cx - targetTile.cx;
+  const dy = sourceTile.cy - targetTile.cy;
+  return Math.hypot(dx, dy) <= HEX_RADIUS * 2 + 0.01;
+}
+
+/**
+ * @param {TileColor} sourceColor
+ * @param {TileColor} targetColor
+ * @returns {boolean}
+ */
+function areBlobColorsLinkCompatible(sourceColor, targetColor) {
+  if (!isMovable(sourceColor) || !isMovable(targetColor)) return false;
+  if (PRIMARY_COLORS.has(sourceColor) && PRIMARY_COLORS.has(targetColor)) return true;
+  return (sourceColor === 'purple' && targetColor === 'yellow') ||
+    (sourceColor === 'yellow' && targetColor === 'purple') ||
+    (sourceColor === 'green' && targetColor === 'red') ||
+    (sourceColor === 'red' && targetColor === 'green') ||
+    (sourceColor === 'orange' && targetColor === 'blue') ||
+    (sourceColor === 'blue' && targetColor === 'orange');
 }
 
 /**
@@ -1787,7 +2077,10 @@ function onPointerDown(event) {
 
   if (isAnalysisBoardPaintArmed()) {
     beginAnalysisPaintStroke(event.pointerId);
-    const paintTileIndex = getBoardTileIndexFromPointerEvent(event);
+    const directTileIndex = analysisSessionState.selectedColor === 'white'
+      ? readIndexFromEvent(event)
+      : null;
+    const paintTileIndex = directTileIndex ?? getBoardTileIndexFromPointerEvent(event);
     const painted = paintTileIndex !== null && paintAnalysisTile(paintTileIndex);
     if (painted || isAnalysisSelectionActive()) {
       render();
@@ -1795,6 +2088,21 @@ function onPointerDown(event) {
     boardSvg.setPointerCapture(event.pointerId);
     event.preventDefault();
     return;
+  }
+
+  if (
+    appState.playVariant === 'analysis' &&
+    analysisSessionState.selectedColor === 'white'
+  ) {
+    const eraseTileIndex = readIndexFromEvent(event);
+    if (eraseTileIndex !== null && state.tiles[eraseTileIndex] !== 'white') {
+      beginAnalysisPaintStroke(event.pointerId);
+      paintAnalysisTile(eraseTileIndex);
+      render();
+      boardSvg.setPointerCapture(event.pointerId);
+      event.preventDefault();
+      return;
+    }
   }
 
   const selectionCleared = isAnalysisSelectionActive() && setSelectedBlobKey(null);
@@ -1913,13 +2221,27 @@ function onPointerUp(event) {
   const sourceIndex = state.dragState.sourceIndex;
   const release = getBestReleaseCandidate(sourceIndex);
   const releaseTile = release.index;
+  const meetsDropPlacement =
+    release.containment >= DROP_CONTAINMENT_THRESHOLD || release.overlapCount >= 2;
 
+  const analysisEmptyMove =
+    releaseTile !== null &&
+    meetsDropPlacement &&
+    canAnalysisMoveToEmptyTile(sourceIndex, releaseTile);
   const legalDrop =
     releaseTile !== null &&
-    release.containment >= DROP_CONTAINMENT_THRESHOLD &&
+    meetsDropPlacement &&
     isLinkedBlobMove(sourceIndex, releaseTile, state.tiles);
 
-  if (legalDrop) {
+  if (analysisEmptyMove) {
+    state.history.push({
+      tiles: [...state.tiles]
+    });
+    moveAnalysisTileToEmptySpace(sourceIndex, releaseTile);
+    startBoardTimerIfNeeded();
+    updateNoLegalMovesState();
+    hideMoveError(true);
+  } else if (legalDrop) {
     state.history.push({
       tiles: [...state.tiles]
     });
@@ -2079,7 +2401,7 @@ function updateHoverTarget() {
   for (const tile of tilesMeta) {
     const idx = tile.index;
     if (idx === sourceIndex) continue;
-    if (!canDrop(sourceIndex, idx, state)) continue;
+    if (!canDrop(sourceIndex, idx, state) && !canAnalysisMoveToEmptyTile(sourceIndex, idx)) continue;
 
     const overlap = getOverlapForIndex(draggedPoly, draggedArea, idx, 'outer');
     if (!overlap) continue;
@@ -2224,7 +2546,7 @@ function getIllegalMoveMessage(sourceIndex) {
   }
 
   const releaseColor = state.tiles[releaseTile];
-  if (release.containment < DROP_CONTAINMENT_THRESHOLD) {
+  if (release.containment < DROP_CONTAINMENT_THRESHOLD && release.overlapCount < 2) {
     return 'You tried to drop a tile outside the target zone. Try again.';
   }
 
@@ -2259,23 +2581,25 @@ function getIllegalMoveMessage(sourceIndex) {
 
 /**
  * @param {number} sourceIndex
- * @returns {{index:number|null, containment:number, targetCoverage:number}}
+ * @returns {{index:number|null, containment:number, targetCoverage:number, overlapCount:number}}
  */
 function getBestReleaseCandidate(sourceIndex) {
   const draggedPoly = getDraggedInnerPolygon();
   const draggedArea = Math.abs(polygonArea(draggedPoly));
   if (draggedArea <= 0) {
-    return { index: null, containment: 0, targetCoverage: 0 };
+    return { index: null, containment: 0, targetCoverage: 0, overlapCount: 0 };
   }
 
   let bestIdx = null;
   let bestContainment = 0;
   let bestCoverage = 0;
+  let overlapCount = 0;
 
   for (const tile of tilesMeta) {
     if (tile.index === sourceIndex) continue;
     const overlap = getOverlapForIndex(draggedPoly, draggedArea, tile.index, 'outer');
     if (!overlap) continue;
+    overlapCount += 1;
     if (overlap.targetCoverage > bestCoverage) {
       bestCoverage = overlap.targetCoverage;
       bestContainment = overlap.containment;
@@ -2284,10 +2608,10 @@ function getBestReleaseCandidate(sourceIndex) {
   }
 
   if (bestIdx === null) {
-    return { index: null, containment: bestContainment, targetCoverage: bestCoverage };
+    return { index: null, containment: bestContainment, targetCoverage: bestCoverage, overlapCount };
   }
 
-  return { index: bestIdx, containment: bestContainment, targetCoverage: bestCoverage };
+  return { index: bestIdx, containment: bestContainment, targetCoverage: bestCoverage, overlapCount };
 }
 
 /**
@@ -2476,6 +2800,7 @@ function renderLandingBoard() {
 }
 
 function render() {
+  renderAnalysisStatus();
   syncGameBoardSize();
   renderAnalysisGraph();
   maybeCaptureAnalysisMaxState();
@@ -2486,7 +2811,6 @@ function render() {
   updateScore();
   updateUndoCount();
   updateBoardTimer();
-  renderAnalysisStatus();
   renderNoMovesNotice();
   updateUndoButtonState();
   updateClearBoardButtonState();
@@ -2670,16 +2994,16 @@ function buildBlobGraphData(tiles) {
     const sourceKey = tileBlobKey[i];
     if (!sourceKey) continue;
 
-    for (const neighbor of getNeighbors(i)) {
-      if (neighbor <= i) continue;
-      if (tiles[neighbor] === 'white') continue;
-      const targetKey = tileBlobKey[neighbor];
+    for (let j = i + 1; j < tiles.length; j += 1) {
+      if (tiles[j] === 'white') continue;
+      const targetKey = tileBlobKey[j];
       if (!targetKey || targetKey === sourceKey) continue;
+      if (!doTilesTouch(i, j)) continue;
 
       const sourceColor = blobColorByKey.get(sourceKey);
       const targetColor = blobColorByKey.get(targetKey);
       if (!sourceColor || !targetColor) continue;
-      if (!mix(sourceColor, targetColor)) continue;
+      if (!areBlobColorsLinkCompatible(sourceColor, targetColor)) continue;
 
       const [a, b] = sourceKey < targetKey
         ? [sourceKey, targetKey]
@@ -2921,6 +3245,9 @@ function drawAnalysisGraph() {
       y2: String(b.y)
     });
     analysisGraphSvg.appendChild(edge);
+
+    const contactCounts = getAnalysisGraphEdgeContactCounts(aKey, bKey);
+    drawAnalysisGraphEdgeLabel(a, b, contactCounts.aCount, contactCounts.bCount);
   }
 
   for (const node of analysisGraphState.nodes.values()) {
@@ -2951,6 +3278,73 @@ function drawAnalysisGraph() {
     group.append(circle, label, title);
     analysisGraphSvg.appendChild(group);
   }
+}
+
+
+/**
+ * @param {{key:string,color:TileColor,x:number,y:number}} a
+ * @param {{key:string,color:TileColor,x:number,y:number}} b
+ * @param {number} aCount
+ * @param {number} bCount
+ */
+function drawAnalysisGraphEdgeLabel(a, b, aCount, bCount) {
+  if (!analysisGraphSvg) return;
+
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const distance = Math.max(1, Math.hypot(dx, dy));
+  const ux = dx / distance;
+  const uy = dy / distance;
+  const px = -uy;
+  const py = ux;
+  const midX = (a.x + b.x) / 2;
+  const midY = (a.y + b.y) / 2;
+  const alongOffset = Math.min(18, Math.max(11, distance * 0.12));
+  const sideOffset = 8;
+
+  const aLabel = createSvgEl('text', {
+    class: 'graph-edge-label',
+    x: String(midX - ux * alongOffset + px * sideOffset),
+    y: String(midY - uy * alongOffset + py * sideOffset),
+    fill: COLOR_HEX[a.color]
+  });
+  aLabel.textContent = String(aCount);
+
+  const bLabel = createSvgEl('text', {
+    class: 'graph-edge-label',
+    x: String(midX + ux * alongOffset + px * sideOffset),
+    y: String(midY + uy * alongOffset + py * sideOffset),
+    fill: COLOR_HEX[b.color]
+  });
+  bLabel.textContent = String(bCount);
+
+  analysisGraphSvg.append(aLabel, bLabel);
+}
+
+/**
+ * @param {string} aKey
+ * @param {string} bKey
+ * @returns {{aCount:number,bCount:number}}
+ */
+function getAnalysisGraphEdgeContactCounts(aKey, bKey) {
+  const aMembers = analysisGraphState.blobMembers.get(aKey) || [];
+  const bMembers = analysisGraphState.blobMembers.get(bKey) || [];
+  let aCount = 0;
+  let bCount = 0;
+
+  for (const aIndex of aMembers) {
+    if (bMembers.some((bIndex) => doTilesTouch(aIndex, bIndex))) {
+      aCount += 1;
+    }
+  }
+
+  for (const bIndex of bMembers) {
+    if (aMembers.some((aIndex) => doTilesTouch(bIndex, aIndex))) {
+      bCount += 1;
+    }
+  }
+
+  return { aCount, bCount };
 }
 
 function clampAllAnalysisGraphNodes() {
@@ -3706,7 +4100,36 @@ function renderAnalysisStatus() {
     appState.mode === 'play' &&
     appState.screen === 'game' &&
     appState.playVariant === 'analysis';
-  const counts = getAnalysisPrimaryCounts();
+  const counts = getAnalysisTileCounts();
+
+  analysisBoardStatusEl?.classList.toggle('hidden', !analysisActive);
+  if (analysisActive) {
+    const graphData = buildBlobGraphData(state.tiles);
+    const linkedBlobKeys = new Set(graphData.edges.flat());
+    const connected =
+      graphData.blobs.length > 0 &&
+      graphData.blobs.every((blob) => linkedBlobKeys.has(blob.key));
+    const componentCounts = { red: 0, blue: 0, yellow: 0 };
+
+    for (const tile of state.tiles) {
+      if (tile === 'white') continue;
+      for (const component of COLOR_COMPONENTS[tile] || []) {
+        if (component === 'red' || component === 'blue' || component === 'yellow') {
+          componentCounts[component] += 1;
+        }
+      }
+    }
+
+    const balanced =
+      componentCounts.red === componentCounts.blue &&
+      componentCounts.red === componentCounts.yellow;
+    if (analysisConnectivityStatusEl) {
+      analysisConnectivityStatusEl.textContent = connected ? 'Connected' : 'Dsconnected.';
+    }
+    if (analysisBalanceStatusEl) {
+      analysisBalanceStatusEl.textContent = balanced ? 'Balanced' : 'Unbalanced';
+    }
+  }
 
   if (analysisSessionState.selectedColor) {
     const selected = analysisSessionState.selectedColor;
@@ -3721,14 +4144,14 @@ function renderAnalysisStatus() {
 
   for (const swatch of analysisSwatches) {
     const color = swatch.getAttribute('data-color');
-    if (color !== 'red' && color !== 'blue' && color !== 'yellow') continue;
+    if (!isAnalysisToolColor(color)) continue;
 
     const countEl = swatch.querySelector('.analysis-swatch-count');
     if (countEl) {
       countEl.textContent = String(counts[color]);
     }
 
-    const atLimit = counts[color] >= 20;
+    const atLimit = color !== 'white' && counts[color] >= 20;
     swatch.disabled = atLimit;
     swatch.classList.toggle('limit-reached', atLimit);
     const isSelected =
@@ -3748,9 +4171,7 @@ function updateAnalysisPaintCursor() {
     appState.screen === 'game' &&
     appState.playVariant === 'analysis';
   const selectedColor = analysisSessionState.selectedColor;
-  const hasSelectedPrimaryColor =
-    selectedColor === 'red' || selectedColor === 'blue' || selectedColor === 'yellow';
-  const useCursor = isAnalysisActive && hasSelectedPrimaryColor;
+  const useCursor = isAnalysisActive && isAnalysisToolColor(selectedColor);
 
   gameScreen.classList.toggle('analysis-cursor-active', useCursor);
   if (!useCursor) {
@@ -3760,12 +4181,12 @@ function updateAnalysisPaintCursor() {
 
   gameScreen.style.setProperty(
     '--analysis-cursor',
-    getAnalysisColorCursor(/** @type {'red'|'blue'|'yellow'} */ (selectedColor))
+    getAnalysisColorCursor(/** @type {TileColor} */ (selectedColor))
   );
 }
 
 /**
- * @param {'red'|'blue'|'yellow'} color
+ * @param {TileColor} color
  * @returns {string}
  */
 function getAnalysisColorCursor(color) {
@@ -3801,9 +4222,7 @@ function isAnalysisBoardPaintArmed() {
     appState.mode === 'play' &&
     appState.screen === 'game' &&
     appState.playVariant === 'analysis' &&
-    (analysisSessionState.selectedColor === 'red' ||
-      analysisSessionState.selectedColor === 'blue' ||
-      analysisSessionState.selectedColor === 'yellow')
+    isAnalysisToolColor(analysisSessionState.selectedColor)
   );
 }
 
@@ -3840,20 +4259,22 @@ function endAnalysisPaintStroke(pointerId) {
  */
 function paintAnalysisTile(tileIndex) {
   const selectedColor = analysisSessionState.selectedColor;
-  if (
-    selectedColor !== 'red' &&
-    selectedColor !== 'blue' &&
-    selectedColor !== 'yellow'
-  ) {
+  if (!isAnalysisToolColor(selectedColor)) {
     return false;
   }
   if (tileIndex < 0 || tileIndex >= state.tiles.length) return false;
   if (analysisSessionState.paint.lastTileIndex === tileIndex) return false;
   analysisSessionState.paint.lastTileIndex = tileIndex;
-  if (state.tiles[tileIndex] !== 'white') return false;
 
-  const counts = getAnalysisPrimaryCounts();
-  if (counts[selectedColor] >= 20) {
+  const isErasing = selectedColor === 'white';
+  if (isErasing) {
+    if (state.tiles[tileIndex] === 'white') return false;
+  } else if (state.tiles[tileIndex] !== 'white') {
+    return false;
+  }
+
+  const counts = getAnalysisTileCounts();
+  if (!isErasing && counts[selectedColor] >= 20) {
     analysisSessionState.selectedColor = null;
     resetAnalysisPaintState();
     return false;
@@ -3871,8 +4292,8 @@ function paintAnalysisTile(tileIndex) {
   updateNoLegalMovesState();
   hideMoveError(true);
 
-  const updatedCounts = getAnalysisPrimaryCounts();
-  if (updatedCounts[selectedColor] >= 20) {
+  const updatedCounts = getAnalysisTileCounts();
+  if (!isErasing && updatedCounts[selectedColor] >= 20) {
     analysisSessionState.selectedColor = null;
     resetAnalysisPaintState();
   }
@@ -3883,34 +4304,52 @@ function paintAnalysisTile(tileIndex) {
  * @returns {{red:number,blue:number,yellow:number}}
  */
 function getAnalysisPrimaryCounts() {
+  const counts = getAnalysisTileCounts();
+  return { red: counts.red, blue: counts.blue, yellow: counts.yellow };
+}
+
+/**
+ * @returns {{red:number,blue:number,yellow:number,white:number}}
+ */
+function getAnalysisTileCounts() {
   return state.tiles.reduce(
     (acc, tile) => {
-      if (tile === 'red' || tile === 'blue' || tile === 'yellow') {
+      if (tile === 'red' || tile === 'blue' || tile === 'yellow' || tile === 'white') {
         acc[tile] += 1;
       }
       return acc;
     },
-    { red: 0, blue: 0, yellow: 0 }
+    { red: 0, blue: 0, yellow: 0, white: 0 }
   );
+}
+
+/**
+ * @param {unknown} color
+ * @returns {color is TileColor}
+ */
+function isAnalysisToolColor(color) {
+  return color === 'red' || color === 'blue' || color === 'yellow' || color === 'white';
 }
 
 function renderNoMovesNotice() {
   if (!noMovesNoticeEl) return;
 
-  const score = state.tiles.reduce((acc, tile) => (tile === 'white' ? acc + 1 : acc), 0);
+  const score = getCurrentScore();
   const clearedBoard = score === 60;
   const isEmptyAnalysisBoard = appState.playVariant === 'analysis' && clearedBoard;
   const shouldShow =
     appState.mode === 'play' &&
     appState.screen === 'game' &&
-    noLegalMovesLeft &&
+    (noLegalMovesLeft || autoPlayState.terminalNotice) &&
     !isEmptyAnalysisBoard;
 
   if (shouldShow) {
     updateBestScore(score);
     const terminalMessage = clearedBoard
       ? 'Congratulations, you cleared the board!'
-      : 'There are no legal moves left!';
+      : autoPlayState.terminalNotice
+        ? 'Auto Play stopped.'
+        : 'There are no legal moves left!';
     noMovesNoticeEl.textContent = `${terminalMessage} Score: ${score}, best this session: ${bestScore}.`;
   }
 
@@ -4066,11 +4505,13 @@ function renderPreview() {
   const targetIndex = state.dragState.hoverTarget;
   if (sourceIndex === null || targetIndex === null) return;
 
-  if (!canDrop(sourceIndex, targetIndex, state)) return;
+  if (!canDrop(sourceIndex, targetIndex, state) && !canAnalysisMoveToEmptyTile(sourceIndex, targetIndex)) return;
 
   const sourceColor = state.tiles[sourceIndex];
   const targetColor = state.tiles[targetIndex];
-  const mixed = mix(sourceColor, targetColor);
+  const mixed = targetColor === 'white' && canAnalysisMoveToEmptyTile(sourceIndex, targetIndex)
+    ? sourceColor
+    : mix(sourceColor, targetColor);
   if (!mixed) return;
 
   const draggedPoly = getDraggedInnerPolygon();
@@ -4128,8 +4569,14 @@ function renderDemoLayer() {
   demoLayer.appendChild(piece);
 }
 
+function getCurrentScore() {
+  return state.tiles.reduce((acc, tile) => (tile === 'white' ? acc + 1 : acc), 0);
+}
+
 function updateScore() {
-  const score = state.tiles.reduce((acc, tile) => (tile === 'white' ? acc + 1 : acc), 0);
+  if (!scoreValueEl) return;
+  const score = getCurrentScore();
+  scoreValueEl.textContent = String(score);
   if (appState.playVariant !== 'analysis') {
     updateBestScore(score);
   }
@@ -4221,6 +4668,10 @@ function updateBestScore(score) {
   if (score > bestScore) {
     bestScore = score;
   }
+
+  const bestEl = bestScoreValueEl || document.getElementById('best-score-value');
+  if (!bestEl) return;
+  bestEl.textContent = String(bestScore);
 }
 
 function updateUndoButtonState() {
@@ -4235,8 +4686,12 @@ function updateUndoButtonState() {
 
 function updateClearBoardButtonState() {
   if (autoPlayBtn) {
+    const regularPlayActive =
+      appState.mode === 'play' &&
+      appState.screen === 'game' &&
+      appState.playVariant === 'standard';
     autoPlayBtn.textContent = autoPlayState.active ? 'Stop' : 'Auto Play';
-    autoPlayBtn.disabled = appState.mode !== 'play' || appState.screen !== 'game' || appState.playVariant === 'analysis';
+    autoPlayBtn.disabled = !regularPlayActive;
   }
   if (!clearBoardBtn) return;
 

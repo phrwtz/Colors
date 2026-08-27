@@ -416,6 +416,15 @@ body {
   background: var(--yellow);
 }
 
+.analysis-swatch.white {
+  background: var(--white);
+}
+
+.analysis-swatch.white .analysis-swatch-count {
+  color: var(--ink);
+  text-shadow: none;
+}
+
 .analysis-swatch.selected {
   border-color: #ffffff;
   box-shadow:
@@ -425,8 +434,7 @@ body {
 
 .analysis-swatch.limit-reached,
 .analysis-swatch:disabled {
-  filter: grayscale(1);
-  opacity: 0.45;
+  opacity: 0.65;
   cursor: not-allowed;
 }
 
@@ -434,6 +442,17 @@ body {
   stroke: #25363f;
   stroke-width: 2.4;
   opacity: 0.95;
+}
+
+.graph-edge-label {
+  font-size: 15px;
+  font-weight: 800;
+  stroke: #fffdf8;
+  stroke-width: 3px;
+  paint-order: stroke fill;
+  text-anchor: middle;
+  dominant-baseline: central;
+  pointer-events: none;
 }
 
 .graph-node .node-circle {
@@ -511,6 +530,18 @@ button:focus-visible {
 .game-screen:not(.analysis-mode) .board-layout .board-wrap {
   width: var(--board-shell-width);
   max-width: 100%;
+}
+
+.analysis-board-status {
+  position: relative;
+  top: 50px;
+  display: flex;
+  justify-content: center;
+  gap: 1.25rem;
+  margin: 0 0 0.35rem;
+  font-size: 24px;
+  line-height: 1.2;
+  text-align: center;
 }
 
 #board,
